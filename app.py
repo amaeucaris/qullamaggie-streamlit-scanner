@@ -1441,20 +1441,22 @@ def main() -> None:
 
     metrics = pd.DataFrame()
     enriched_history: dict[str, pd.DataFrame] = {}
+    history: dict[str, pd.DataFrame] = {}
 
     if data_mode == "Precomputed" and HISTORY_FILE.exists():
         with st.spinner("Carico dati precomputati..."):
-            all_history = load_precomputed_history(str(HISTORY_FILE))
-            history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
             if METRICS_FILE.exists() and filters.breakout_lookback == DEFAULT_BREAKOUT_LOOKBACK:
                 all_metrics = load_precomputed_metrics(str(METRICS_FILE))
                 metrics = all_metrics[all_metrics["Ticker"].isin(selected_symbols)].copy()
+            else:
+                all_history = load_precomputed_history(str(HISTORY_FILE))
+                history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
         if METADATA_FILE.exists():
             try:
                 metadata = json.loads(METADATA_FILE.read_text())
                 st.caption(
                     f"Dati precomputati aggiornati: {metadata.get('updated_at', 'n/d')} - "
-                    f"{metadata.get('tickers_with_data', len(history)):,} ticker con dati."
+                    f"{metadata.get('tickers_with_data', len(metrics) or len(history)):,} ticker con dati."
                 )
             except json.JSONDecodeError:
                 pass
@@ -1471,6 +1473,10 @@ def main() -> None:
             )
 
     if metrics.empty:
+        if not history and data_mode == "Precomputed" and HISTORY_FILE.exists():
+            with st.spinner("Carico storico prezzi per calcolo custom..."):
+                all_history = load_precomputed_history(str(HISTORY_FILE))
+                history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
         with st.spinner("Calcolo metriche scanner..."):
             metrics, enriched_history = calculate_metrics(history, filters.breakout_lookback)
 
@@ -1560,6 +1566,10 @@ def main() -> None:
         bt_non_extended = bt_cols[2].toggle("Solo non-extended", value=True)
 
         if st.button("Esegui backtest Qullamaggie", use_container_width=True):
+            if not history and HISTORY_FILE.exists():
+                with st.spinner("Carico storico prezzi per backtest..."):
+                    all_history = load_precomputed_history(str(HISTORY_FILE))
+                    history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
             with st.spinner("Calcolo backtest Qullamaggie..."):
                 trades_df, summary_df = run_qullamaggie_backtest(
                     history,
@@ -1638,7 +1648,14 @@ def main() -> None:
             or metrics["Ticker"].head(50).tolist()
         )
         ticker = st.selectbox("Ticker", candidates)
-        draw_chart(ticker, enriched_history, history)
+        if st.button("Mostra chart", use_container_width=True):
+            if not history and HISTORY_FILE.exists():
+                with st.spinner("Carico storico prezzi per chart..."):
+                    all_history = load_precomputed_history(str(HISTORY_FILE))
+                    history = {ticker_key: all_history[ticker_key] for ticker_key in selected_symbols if ticker_key in all_history}
+            draw_chart(ticker, enriched_history, history)
+        else:
+            st.caption("Seleziona un ticker e premi Mostra chart per caricare lo storico prezzi solo quando serve.")
 
 
 if __name__ == "__main__":
