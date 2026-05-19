@@ -1046,9 +1046,14 @@ def render_steve_dashboard(
     stockbee_screen: pd.DataFrame,
 ) -> None:
     steve = add_steve_dashboard_fields(metrics)
-    steve_tabs = st.tabs(["Gurus", "Signals", "Liquid Leaders", "Stage Analysis", "Heatmap", "Industry RS", "Quadrant Stocks"])
+    steve_view = st.radio(
+        "Steve section",
+        ["Gurus", "Signals", "Liquid Leaders", "Stage Analysis", "Heatmap", "Industry RS", "Quadrant Stocks"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
-    with steve_tabs[0]:
+    if steve_view == "Gurus":
         control_cols = st.columns([1, 1, 3])
         sort_by = control_cols[0].selectbox(
             "Sort by",
@@ -1068,10 +1073,10 @@ def render_steve_dashboard(
     liquid = steve[steve["Daily $ Volume 20D"] >= 500_000_000].copy()
     rts = steve[(steve["Daily $ Volume 20D"] >= 50_000_000) & (steve["ADR 20D %"] >= steve["ADR 20D %"].median())].copy()
 
-    with steve_tabs[1]:
+    if steve_view == "Signals":
         render_market_signals(steve, stockbee_screen)
 
-    with steve_tabs[2]:
+    if steve_view == "Liquid Leaders":
         st.subheader("Liquid Leaders")
         st.caption(
             "Daily dollar volume 20D >= $500M, ticker raggruppati per price structure delle medie mobili."
@@ -1092,16 +1097,16 @@ def render_steve_dashboard(
                 "steve_liquid_leaders.csv",
             )
 
-    with steve_tabs[3]:
+    if steve_view == "Stage Analysis":
         render_stage_analysis(steve)
 
-    with steve_tabs[4]:
+    if steve_view == "Heatmap":
         render_heatmap(steve)
 
-    with steve_tabs[5]:
+    if steve_view == "Industry RS":
         render_industry_rs_placeholder()
 
-    with steve_tabs[6]:
+    if steve_view == "Quadrant Stocks":
         render_quadrant_stocks(steve)
 
     with st.expander("Relative Trend Strength ed Extension Monitor", expanded=False):
@@ -1506,17 +1511,8 @@ def main() -> None:
     kpis[3].metric("Stockbee 4%", f"{len(stockbee_screen):,}")
     kpis[4].metric("Ultima data", str(pd.to_datetime(metrics["Date"]).max().date()))
 
-    (
-        tab_steve,
-        tab_qullamaggie,
-        tab_backtest,
-        tab_guru,
-        tab_minervini,
-        tab_extension,
-        tab_stockbee,
-        tab_universe,
-        tab_chart,
-    ) = st.tabs(
+    view = st.radio(
+        "Vista",
         [
             "Steve Dashboard",
             "Qullamaggie Top 2%",
@@ -1527,13 +1523,14 @@ def main() -> None:
             "Stockbee 4% Breakout",
             "Universo",
             "Chart",
-        ]
+        ],
+        horizontal=True,
     )
 
-    with tab_steve:
+    if view == "Steve Dashboard":
         render_steve_dashboard(metrics, q_screen, minervini_screen, guru_screen, stockbee_screen)
 
-    with tab_qullamaggie:
+    elif view == "Qullamaggie Top 2%":
         st.caption(
             "Scanner Qullamaggie principale: top momentum per 1M/3M/6M, ADR 20D, prezzo sopra SMA10/SMA20, "
             "avg volume e prezzo minimo. Le zone di estensione servono per evitare titoli troppo tirati."
@@ -1555,7 +1552,7 @@ def main() -> None:
         )
         export_section("Qullamaggie", q_screen, "qullamaggie_scan.csv")
 
-    with tab_backtest:
+    elif view == "Backtest Q":
         st.caption(
             "Backtest meccanico del solo scanner Qullamaggie: segnale a fine giornata, entrata il giorno dopo "
             "in apertura, uscita dopo N sedute. Non replica l'entry discrezionale ORH di Qullamaggie."
@@ -1587,7 +1584,7 @@ def main() -> None:
                 st.dataframe(trades_df.round(3), use_container_width=True, hide_index=True)
                 export_raw_section("Backtest Trades", trades_df, "qullamaggie_backtest_trades.csv")
 
-    with tab_guru:
+    elif view == "Guru Q x Minervini":
         st.caption(
             "Ispirato ai tweet di Steve Jacobs: intersezione Qullamaggie x Minervini, ordinata per "
             "ATR-to-SMA50 extension. Attiva 'Steve mode' nella sidebar per mostrare solo i non-extended."
@@ -1608,14 +1605,14 @@ def main() -> None:
         )
         export_section("Guru", guru_screen, "guru_qullamaggie_minervini_scan.csv")
 
-    with tab_minervini:
+    elif view == "Minervini":
         st.caption(
             "Minervini inspired: Trend Template classico piu green candle. Ordinato per ATR-to-SMA50 extension."
         )
         st.dataframe(format_output(minervini_screen), use_container_width=True, hide_index=True)
         export_section("Minervini", minervini_screen, "minervini_trend_template_scan.csv")
 
-    with tab_extension:
+    elif view == "Extension Map":
         st.caption(
             "Mappa estensione ispirata a Steve Jacobs: ATR-to-SMA50 extension. "
             "Hyper extended parte da 7x ATR di default."
@@ -1631,16 +1628,16 @@ def main() -> None:
         st.dataframe(format_output(extension_screen), use_container_width=True, hide_index=True)
         export_section("Extension Map", extension_screen, "extension_map_scan.csv")
 
-    with tab_stockbee:
+    elif view == "Stockbee 4% Breakout":
         st.caption("Stockbee 4%: close / previous close >= 1.04, volume > volume ieri, volume >= soglia.")
         st.dataframe(format_output(stockbee_screen), use_container_width=True, hide_index=True)
         export_section("Stockbee", stockbee_screen, "stockbee_4pct_breakouts.csv")
 
-    with tab_universe:
+    elif view == "Universo":
         st.dataframe(format_output(metrics), use_container_width=True, hide_index=True)
         export_section("Universo", metrics, "universe_metrics.csv")
 
-    with tab_chart:
+    elif view == "Chart":
         candidates = (
             guru_screen["Ticker"].tolist()
             or q_screen["Ticker"].tolist()
