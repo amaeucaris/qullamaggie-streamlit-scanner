@@ -22,7 +22,9 @@ OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
 EXPORT_DIR = Path("exports")
 DATA_DIR = Path("data")
 HISTORY_FILE = DATA_DIR / "history_prices.parquet"
+METRICS_FILE = DATA_DIR / "scanner_metrics.parquet"
 METADATA_FILE = DATA_DIR / "metadata.json"
+DEFAULT_BREAKOUT_LOOKBACK = 20
 RETURN_WINDOWS = {
     "1W": 5,
     "1M": 21,
@@ -195,6 +197,22 @@ def save_history_to_parquet(history: dict[str, pd.DataFrame], path: Path = HISTO
 
     path.parent.mkdir(exist_ok=True)
     pd.concat(rows, ignore_index=True).to_parquet(path, index=False)
+
+
+@st.cache_data(ttl=60 * 15, show_spinner=False)
+def load_precomputed_metrics(path: str) -> pd.DataFrame:
+    metrics = pd.read_parquet(path)
+    if "Date" in metrics.columns:
+        metrics["Date"] = pd.to_datetime(metrics["Date"])
+    return metrics
+
+
+def save_metrics_to_parquet(metrics: pd.DataFrame, path: Path = METRICS_FILE) -> None:
+    if metrics.empty:
+        raise ValueError("No scanner metrics to save.")
+
+    path.parent.mkdir(exist_ok=True)
+    metrics.to_parquet(path, index=False)
 
 
 def safe_return(close: pd.Series, days: int) -> float:
@@ -1286,8 +1304,26 @@ def run_qullamaggie_backtest(
     return trades_df, summary
 
 
-def draw_chart(ticker: str, enriched_history: dict[str, pd.DataFrame]) -> None:
+def enrich_price_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    df = frame[required].copy().dropna(subset=["Close"])
+    df["SMA10"] = sma(df["Close"], length=10)
+    df["SMA20"] = sma(df["Close"], length=20)
+    df["SMA50"] = sma(df["Close"], length=50)
+    df["SMA150"] = sma(df["Close"], length=150)
+    df["SMA200"] = sma(df["Close"], length=200)
+    df["ATR14"] = atr(df["High"], df["Low"], df["Close"], length=14)
+    return df
+
+
+def draw_chart(
+    ticker: str,
+    enriched_history: dict[str, pd.DataFrame],
+    history: dict[str, pd.DataFrame] | None = None,
+) -> None:
     df = enriched_history.get(ticker)
+    if (df is None or df.empty) and history is not None and ticker in history:
+        df = enrich_price_frame(history[ticker])
     if df is None or df.empty:
         st.info("Nessun dato chart disponibile per il ticker selezionato.")
         return
@@ -1345,7 +1381,7 @@ def sidebar_controls(symbols: pd.DataFrame) -> tuple[list[str], ScanFilters, lis
     min_breakout_pct = st.sidebar.slider("Stockbee breakout minimo %", 1.0, 15.0, 4.0, 0.5)
     stockbee_min_price = st.sidebar.number_input("Stockbee prezzo minimo", min_value=0.0, value=3.0, step=0.5)
     stockbee_min_volume = st.sidebar.number_input("Stockbee volume minimo", min_value=0, value=100_000, step=50_000)
-    breakout_lookback = st.sidebar.slider("Lookback high contesto", 10, 100, 20, 5)
+    breakout_lookback = st.sidebar.slider("Lookback high contesto", 10, 100, DEFAULT_BREAKOUT_LOOKBACK, 5)
     chunk_size = st.sidebar.slider("Ticker per batch", 25, 250, 100, 25)
     pause_seconds = st.sidebar.slider("Pausa tra batch", 0.0, 2.0, 0.2, 0.1)
 
@@ -1403,10 +1439,16 @@ def main() -> None:
         f"Scanner corrente: {len(selected_symbols):,} ticker daily."
     )
 
+    metrics = pd.DataFrame()
+    enriched_history: dict[str, pd.DataFrame] = {}
+
     if data_mode == "Precomputed" and HISTORY_FILE.exists():
-        with st.spinner("Carico dati precomputati e calcolo ranking..."):
+        with st.spinner("Carico dati precomputati..."):
             all_history = load_precomputed_history(str(HISTORY_FILE))
             history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
+            if METRICS_FILE.exists() and filters.breakout_lookback == DEFAULT_BREAKOUT_LOOKBACK:
+                all_metrics = load_precomputed_metrics(str(METRICS_FILE))
+                metrics = all_metrics[all_metrics["Ticker"].isin(selected_symbols)].copy()
         if METADATA_FILE.exists():
             try:
                 metadata = json.loads(METADATA_FILE.read_text())
@@ -1428,8 +1470,9 @@ def main() -> None:
                 pause_seconds=pause_seconds,
             )
 
-    with st.spinner("Calcolo metriche scanner..."):
-        metrics, enriched_history = calculate_metrics(history, filters.breakout_lookback)
+    if metrics.empty:
+        with st.spinner("Calcolo metriche scanner..."):
+            metrics, enriched_history = calculate_metrics(history, filters.breakout_lookback)
 
     if metrics.empty:
         st.warning("Nessun dato valido ricevuto. Prova a ridurre i batch o premere Refresh dati.")
@@ -1595,7 +1638,7 @@ def main() -> None:
             or metrics["Ticker"].head(50).tolist()
         )
         ticker = st.selectbox("Ticker", candidates)
-        draw_chart(ticker, enriched_history)
+        draw_chart(ticker, enriched_history, history)
 
 
 if __name__ == "__main__":

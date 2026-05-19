@@ -29,4 +29,4 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Update scanner data"
-          file_pattern: data/history_prices.parquet data/metadata.json
+          file_pattern: data/history_prices.parquet data/scanner_metrics.parquet data/metadata.json

@@ -8,10 +8,14 @@ from pathlib import Path
 
 from app import (
     DATA_DIR,
+    DEFAULT_BREAKOUT_LOOKBACK,
     HISTORY_FILE,
+    METRICS_FILE,
+    calculate_metrics,
     download_price_history,
     load_symbols,
     save_history_to_parquet,
+    save_metrics_to_parquet,
 )
 
 
@@ -57,6 +61,8 @@ def main() -> None:
             time.sleep(sleep_seconds)
 
     save_history_to_parquet(history, HISTORY_FILE)
+    metrics, _ = calculate_metrics(history, DEFAULT_BREAKOUT_LOOKBACK)
+    save_metrics_to_parquet(metrics, METRICS_FILE)
 
     DATA_DIR.mkdir(exist_ok=True)
     metadata = {
@@ -69,6 +75,9 @@ def main() -> None:
         "tickers_with_data": len(history),
         "missing_tickers": len(remaining),
         "history_file": str(Path(HISTORY_FILE).as_posix()),
+        "metrics_file": str(Path(METRICS_FILE).as_posix()),
+        "metrics_breakout_lookback": DEFAULT_BREAKOUT_LOOKBACK,
+        "metrics_rows": len(metrics),
     }
     (DATA_DIR / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(json.dumps(metadata, indent=2))
