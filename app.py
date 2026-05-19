@@ -12,7 +12,6 @@ os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
@@ -204,6 +203,23 @@ def safe_return(close: pd.Series, days: int) -> float:
     return (close.iloc[-1] / close.iloc[-days - 1] - 1) * 100
 
 
+def sma(series: pd.Series, length: int) -> pd.Series:
+    return series.rolling(length, min_periods=length).mean()
+
+
+def atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return true_range.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+
+
 def calculate_metrics(
     history: dict[str, pd.DataFrame],
     breakout_lookback: int,
@@ -220,15 +236,15 @@ def calculate_metrics(
         if len(df) < 130:
             continue
 
-        df["SMA10"] = ta.sma(df["Close"], length=10)
-        df["SMA20"] = ta.sma(df["Close"], length=20)
-        df["SMA50"] = ta.sma(df["Close"], length=50)
-        df["SMA150"] = ta.sma(df["Close"], length=150)
-        df["SMA200"] = ta.sma(df["Close"], length=200)
-        df["ATR14"] = ta.atr(df["High"], df["Low"], df["Close"], length=14)
-        df["AVG_VOL20"] = ta.sma(df["Volume"], length=20)
+        df["SMA10"] = sma(df["Close"], length=10)
+        df["SMA20"] = sma(df["Close"], length=20)
+        df["SMA50"] = sma(df["Close"], length=50)
+        df["SMA150"] = sma(df["Close"], length=150)
+        df["SMA200"] = sma(df["Close"], length=200)
+        df["ATR14"] = atr(df["High"], df["Low"], df["Close"], length=14)
+        df["AVG_VOL20"] = sma(df["Volume"], length=20)
         df["ADR_PCT"] = ((df["High"] / df["Low"]) - 1).replace([np.inf, -np.inf], np.nan) * 100
-        df["ADR20_PCT"] = ta.sma(df["ADR_PCT"], length=20)
+        df["ADR20_PCT"] = sma(df["ADR_PCT"], length=20)
         df["RET_1D_PCT"] = df["Close"].pct_change() * 100
         df["HIGH_LOOKBACK"] = df["Close"].shift(1).rolling(breakout_lookback).max()
         df["VOL_RATIO20"] = df["Volume"] / df["AVG_VOL20"]
@@ -1148,12 +1164,12 @@ def build_backtest_panel(history: dict[str, pd.DataFrame], breakout_lookback: in
             continue
 
         df["Ticker"] = ticker
-        df["SMA10"] = ta.sma(df["Close"], length=10)
-        df["SMA20"] = ta.sma(df["Close"], length=20)
-        df["SMA50"] = ta.sma(df["Close"], length=50)
-        df["ATR14"] = ta.atr(df["High"], df["Low"], df["Close"], length=14)
-        df["AVG_VOL20"] = ta.sma(df["Volume"], length=20)
-        df["ADR20_PCT"] = ta.sma(((df["High"] / df["Low"]) - 1) * 100, length=20)
+        df["SMA10"] = sma(df["Close"], length=10)
+        df["SMA20"] = sma(df["Close"], length=20)
+        df["SMA50"] = sma(df["Close"], length=50)
+        df["ATR14"] = atr(df["High"], df["Low"], df["Close"], length=14)
+        df["AVG_VOL20"] = sma(df["Volume"], length=20)
+        df["ADR20_PCT"] = sma(((df["High"] / df["Low"]) - 1) * 100, length=20)
         df["ATR Extension SMA50"] = (df["Close"] - df["SMA50"]) / df["ATR14"]
         df["Return 1M %"] = df["Close"].pct_change(RETURN_WINDOWS["1M"]) * 100
         df["Return 3M %"] = df["Close"].pct_change(RETURN_WINDOWS["3M"]) * 100
