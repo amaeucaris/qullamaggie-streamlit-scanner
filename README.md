@@ -19,7 +19,8 @@ Consigliato usare un virtualenv pulito: `pandas-ta` moderno usa stack NumPy/Pand
 2. In GitHub apri **Actions** -> **Update scanner data** -> **Run workflow**.
 3. La workflow crea `data/history_prices.parquet` e `data/metadata.json`.
 4. Su Streamlit Cloud fai deploy puntando a `app.py`.
-5. Nell'app usa modalita **Precomputed** per leggere i dati gia scaricati.
+5. In **Advanced settings** seleziona Python `3.12`.
+6. Nell'app usa modalita **Precomputed** per leggere i dati gia scaricati.
 
 La workflow e schedulata dopo la chiusura USA nei giorni feriali. Questo evita di chiamare `yfinance` a ogni apertura dell'app da smartphone.
 

@@ -1,9 +1,10 @@
-streamlit>=1.49
+streamlit==1.37.1
+rich==13.7.1
 yfinance>=0.2.40
-pandas>=2.3.2
-numpy>=2.2.6
-pandas-ta>=0.4.71b0
-plotly>=5.22
+pandas==2.3.2
+numpy==2.2.6
+pandas-ta==0.4.71b0
+plotly==5.24.1
 pyarrow>=20
 numexpr>=2.11
 bottleneck>=1.5
