@@ -5,6 +5,7 @@ import os
 import time
 import json
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 
 os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
@@ -24,9 +25,11 @@ DATA_DIR = Path("data")
 HISTORY_FILE = DATA_DIR / "history_prices.parquet"
 METADATA_FILE = DATA_DIR / "metadata.json"
 RETURN_WINDOWS = {
+    "1W": 5,
     "1M": 21,
     "3M": 63,
     "6M": 126,
+    "9M": 189,
 }
 
 
@@ -261,9 +264,11 @@ def calculate_metrics(
                 "Ticker": ticker,
                 "Date": df.index[-1],
                 "Price": last["Close"],
+                "Return 1W %": safe_return(df["Close"], RETURN_WINDOWS["1W"]),
                 "Return 1M %": safe_return(df["Close"], RETURN_WINDOWS["1M"]),
                 "Return 3M %": safe_return(df["Close"], RETURN_WINDOWS["3M"]),
                 "Return 6M %": safe_return(df["Close"], RETURN_WINDOWS["6M"]),
+                "Return 9M %": safe_return(df["Close"], RETURN_WINDOWS["9M"]),
                 "ADR 20D %": last["ADR20_PCT"],
                 "Volume": last["Volume"],
                 "Avg Volume 20D": last["AVG_VOL20"],
@@ -422,9 +427,11 @@ def format_output(df: pd.DataFrame) -> pd.DataFrame:
         "Momentum Rank",
         "Universe Rank",
         *[column for column in df.columns if column.startswith("Top ")],
+        "Return 1W %",
         "Return 1M %",
         "Return 3M %",
         "Return 6M %",
+        "Return 9M %",
         "ADR 20D %",
         "ATR Extension SMA50",
         "% Extension SMA50",
@@ -446,6 +453,686 @@ def format_output(df: pd.DataFrame) -> pd.DataFrame:
     ]
     visible = [column for column in ordered if column in df.columns]
     return df[visible].copy()
+
+
+def candle_color(row: pd.Series) -> str:
+    if bool(row.get("Green Candle", False)):
+        return "#15803d"
+    if row.get("Daily Return %", 0) < 0 and row.get("Price", 0) < row.get("Prev Close", np.inf):
+        return "#b91c1c"
+    return "#334155"
+
+
+def classify_price_structure(row: pd.Series) -> str:
+    price = row["Price"]
+    sma10 = row["SMA10"]
+    sma20 = row["SMA20"]
+    sma50 = row["SMA50"]
+    sma150 = row["SMA150"]
+    sma200 = row["SMA200"]
+
+    if pd.isna([price, sma10, sma20, sma50, sma150, sma200]).any():
+        return "Unclassified"
+    if price > sma10 > sma20 > sma50 > sma150 > sma200:
+        return "2A: Close > 10 > 20 > 50 > 150 > 200"
+    if price > sma10 > sma20 > sma50:
+        return "2B: Close > 10 > 20 > 50"
+    if price > sma20 > sma50 and sma50 > sma150:
+        return "2C: Above 20/50"
+    if price > sma50:
+        return "1B/2: Above SMA50"
+    if price > sma200:
+        return "3A/B: Above SMA200"
+    return "4A/B: Negative trend"
+
+
+def calculate_trend_strength(row: pd.Series) -> float:
+    checks = [
+        row["Price"] > row["SMA10"],
+        row["Price"] > row["SMA20"],
+        row["Price"] > row["SMA50"],
+        row["Price"] > row["SMA150"],
+        row["Price"] > row["SMA200"],
+        row["SMA10"] > row["SMA20"],
+        row["SMA20"] > row["SMA50"],
+        row["SMA50"] > row["SMA150"],
+        row["SMA150"] > row["SMA200"],
+        row["Price"] >= 0.75 * row["52W High"] if pd.notna(row["52W High"]) else False,
+    ]
+    return float(np.mean(checks) * 100)
+
+
+def rts_grade(score: float) -> str:
+    if score >= 97:
+        return "A+"
+    if score >= 90:
+        return "A"
+    if score >= 80:
+        return "B"
+    if score >= 65:
+        return "C"
+    return "D"
+
+
+def add_steve_dashboard_fields(metrics: pd.DataFrame) -> pd.DataFrame:
+    if metrics.empty:
+        return metrics
+
+    output = metrics.copy()
+    output["Daily $ Volume 20D"] = output["Price"] * output["Avg Volume 20D"]
+    output["Price Structure"] = output.apply(classify_price_structure, axis=1)
+    output["Negative Structure"] = output["Price Structure"].str.contains("Negative", na=False)
+    output["Trend Strength"] = output.apply(calculate_trend_strength, axis=1)
+    output["RTS Score"] = (output["Momentum Rank"] + output["Trend Strength"]) / 2
+    output["RTS Grade"] = output["RTS Score"].apply(rts_grade)
+    output["Extended 5x+"] = output["ATR Extension SMA50"] >= 5
+    output["Over Extended 7x+"] = output["ATR Extension SMA50"] >= 7
+    output["Hyper Extended 11x+"] = output["ATR Extension SMA50"] >= 11
+    return output
+
+
+def build_grouped_ticker_matrix(
+    df: pd.DataFrame,
+    group_column: str,
+    sort_column: str,
+    max_rows: int = 40,
+) -> tuple[pd.DataFrame, dict[str, dict[str, object]]]:
+    if df.empty:
+        return pd.DataFrame(), {}
+
+    groups = [group for group in df[group_column].dropna().unique().tolist()]
+    ordered_groups = sorted(groups)
+    columns: dict[str, list[str]] = {}
+    ticker_meta: dict[str, dict[str, object]] = {}
+
+    for group in ordered_groups:
+        group_df = df[df[group_column] == group].sort_values(sort_column, ascending=False).head(max_rows)
+        tickers = group_df["Ticker"].tolist()
+        columns[group] = tickers + [""] * (max_rows - len(tickers))
+
+        for _, row in group_df.iterrows():
+            ticker_meta[str(row["Ticker"])] = {
+                "color": candle_color(row),
+                "negative": bool(row.get("Negative Structure", False)),
+                "extended": bool(row.get("Extended 5x+", False)),
+                "over_extended": bool(row.get("Over Extended 7x+", False)),
+            }
+
+    return pd.DataFrame(columns), ticker_meta
+
+
+def style_ticker_matrix(matrix: pd.DataFrame, ticker_meta: dict[str, dict[str, object]]) -> pd.io.formats.style.Styler:
+    def style_cell(value: object) -> str:
+        ticker = str(value)
+        if not ticker:
+            return "background-color: #ffffff;"
+
+        meta = ticker_meta.get(ticker, {})
+        color = meta.get("color", "#334155")
+        background = "#e5e7eb" if meta.get("negative") else "#ffffff"
+        weight = "800" if meta.get("extended") else "700"
+        if meta.get("over_extended"):
+            color = "#b91c1c"
+        elif meta.get("extended"):
+            color = "#7c3aed"
+
+        return f"color: {color}; background-color: {background}; font-weight: {weight}; text-align: center;"
+
+    return matrix.style.map(style_cell)
+
+
+def steve_css() -> str:
+    return """
+    <style>
+    .steve-board {
+        background: #0b0f17;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        padding: 14px 14px 22px;
+        margin: 4px 0 22px;
+        color: #e5e7eb;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .steve-nav {
+        display: flex;
+        gap: 24px;
+        align-items: center;
+        border-bottom: 2px solid #222936;
+        margin-bottom: 28px;
+        white-space: nowrap;
+        overflow-x: auto;
+    }
+    .steve-nav span {
+        color: #d1d5db;
+        font-size: 15px;
+        line-height: 36px;
+    }
+    .steve-nav .active {
+        color: #ff4d4d;
+        border-bottom: 2px solid #ff4d4d;
+        margin-bottom: -2px;
+    }
+    .steve-controls {
+        display: flex;
+        gap: 42px;
+        align-items: end;
+        margin-bottom: 20px;
+        color: #e5e7eb;
+    }
+    .steve-control-label {
+        font-size: 14px;
+        color: #d1d5db;
+        margin-bottom: 8px;
+    }
+    .steve-select {
+        min-width: 220px;
+        background: #2a2933;
+        border-radius: 8px;
+        color: #f5f5f5;
+        padding: 12px 16px;
+        font-size: 16px;
+    }
+    .steve-radio {
+        display: grid;
+        gap: 8px;
+        font-size: 17px;
+    }
+    .steve-radio span::before {
+        content: "";
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 1px solid #465264;
+        border-radius: 50%;
+        margin-right: 10px;
+        vertical-align: -2px;
+    }
+    .steve-radio .selected::before {
+        background: #ff4d4d;
+        border: 4px solid #ff4d4d;
+        box-shadow: inset 0 0 0 4px #ffe1e1;
+    }
+    .steve-filter-bar {
+        border: 1px solid #2d3748;
+        border-radius: 8px;
+        padding: 11px 16px;
+        color: #e5e7eb;
+        margin-bottom: 18px;
+        font-size: 17px;
+    }
+    .steve-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(150px, 1fr));
+        gap: 18px;
+        align-items: start;
+    }
+    .signal-header {
+        border-radius: 5px;
+        text-align: center;
+        padding: 10px 8px 9px;
+        margin-bottom: 10px;
+        color: #111827;
+        font-weight: 800;
+        min-height: 64px;
+    }
+    .signal-header .count {
+        font-size: 20px;
+        line-height: 22px;
+    }
+    .signal-header .label {
+        font-size: 12px;
+        letter-spacing: .01em;
+        margin-top: 4px;
+    }
+    .header-yellow { background: #ffd400; }
+    .header-green { background: #2bc79a; }
+    .signal-tile {
+        position: relative;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        background: #182236;
+        border-radius: 5px;
+        min-height: 36px;
+        padding: 7px 10px 7px 14px;
+        margin-bottom: 4px;
+        overflow: hidden;
+    }
+    .signal-tile::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        background: var(--bar-color);
+    }
+    .ticker-line {
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 13px;
+        font-weight: 800;
+        color: #e5e7eb;
+    }
+    .ticker-line .pct {
+        color: #00c46a;
+        font-size: 12px;
+        font-weight: 700;
+        margin-left: 6px;
+    }
+    .ticker-line .weekly {
+        color: #2dd4bf;
+        font-size: 11px;
+        margin-left: 6px;
+    }
+    .signal-badge {
+        border: 2px solid var(--badge-color);
+        color: var(--badge-color);
+        border-radius: 7px;
+        min-width: 22px;
+        height: 22px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    @media (max-width: 1100px) {
+        .steve-grid { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
+    }
+    @media (max-width: 680px) {
+        .steve-grid { grid-template-columns: 1fr; }
+        .steve-controls { display: block; }
+        .steve-control { margin-bottom: 16px; }
+    }
+    </style>
+    """
+
+
+def signal_pct(row: pd.Series, pct_column: str) -> str:
+    value = row.get(pct_column, np.nan)
+    if pd.isna(value):
+        return ""
+    prefix = "+" if value >= 0 else ""
+    return f"{prefix}{value:.1f}%"
+
+
+def signal_badge(row: pd.Series) -> tuple[str, str, str]:
+    extension = row.get("ATR Extension SMA50", np.nan)
+    if pd.isna(extension):
+        return "0", "#6b7280", "#6b7280"
+
+    rounded = int(max(0, round(float(extension))))
+    badge_color = "#facc15" if rounded >= 4 else "#00c46a"
+    bar_color = "#facc15" if rounded >= 5 else "#00d46a"
+    if extension < 0:
+        bar_color = "#9ca3af"
+        badge_color = "#9ca3af"
+    return str(rounded), badge_color, bar_color
+
+
+def signal_tile_html(row: pd.Series, pct_column: str, tile_style: str) -> str:
+    ticker = escape(str(row["Ticker"]))
+    pct = escape(signal_pct(row, pct_column))
+    badge, badge_color, bar_color = signal_badge(row)
+    weekly = ""
+    if pct_column == "Return 1W %":
+        weekly = " <span class='weekly'>1W</span>"
+
+    detail = ""
+    if tile_style == "Detailed":
+        price = row.get("Price", np.nan)
+        adr = row.get("ADR 20D %", np.nan)
+        price_text = f" ${price:.2f}" if pd.notna(price) else ""
+        adr_text = f" ADR {adr:.1f}%" if pd.notna(adr) else ""
+        detail = f"<span class='weekly'>{escape(price_text + adr_text)}</span>"
+
+    return (
+        f"<div class='signal-tile' style='--badge-color:{badge_color};--bar-color:{bar_color};'>"
+        f"<div class='ticker-line'>{ticker}{weekly} <span class='pct'>{pct}</span>{detail}</div>"
+        f"<div class='signal-badge'>{escape(badge)}</div>"
+        "</div>"
+    )
+
+
+def sort_signal_df(df: pd.DataFrame, sort_by: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    sort_map = {
+        "ATR Extension": "ATR Extension SMA50",
+        "Daily Return": "Daily Return %",
+        "Momentum Rank": "Momentum Rank",
+        "Dollar Volume": "Daily $ Volume 20D",
+    }
+    column = sort_map.get(sort_by, "ATR Extension SMA50")
+    if column not in df.columns:
+        return df
+    return df.sort_values(column, ascending=False)
+
+
+def prepare_signal_df(source: pd.DataFrame, steve: pd.DataFrame) -> pd.DataFrame:
+    if source.empty or steve.empty:
+        return pd.DataFrame(columns=steve.columns)
+    return steve[steve["Ticker"].isin(set(source["Ticker"]))].copy()
+
+
+def signal_column_html(
+    title: str,
+    code: str,
+    df: pd.DataFrame,
+    pct_column: str,
+    sort_by: str,
+    tile_style: str,
+    header_class: str,
+    max_items: int,
+) -> str:
+    visible_df = sort_signal_df(df, sort_by).head(max_items)
+    tiles = "".join(signal_tile_html(row, pct_column, tile_style) for _, row in visible_df.iterrows())
+    return (
+        "<div class='signal-column'>"
+        f"<div class='signal-header {header_class}'>"
+        f"<div class='count'>{len(df)}</div>"
+        f"<div class='label'>{escape(title)} &nbsp;·&nbsp; {escape(code)}</div>"
+        "</div>"
+        f"{tiles}"
+        "</div>"
+    )
+
+
+def render_steve_signals_board(
+    steve: pd.DataFrame,
+    q_screen: pd.DataFrame,
+    minervini_screen: pd.DataFrame,
+    stockbee_screen: pd.DataFrame,
+    sort_by: str,
+    tile_style: str,
+) -> None:
+    if steve.empty:
+        st.info("Nessun dato disponibile per la dashboard Steve.")
+        return
+
+    kq = prepare_signal_df(q_screen, steve)
+    mm = prepare_signal_df(minervini_screen, steve)
+    sb4 = prepare_signal_df(stockbee_screen, steve)
+    base_liquid = steve[(steve["Price"] > 5) & (steve["Avg Volume 20D"] > 200_000)].copy()
+
+    sb9_cutoff = max(1, math.ceil(len(base_liquid) * 0.02))
+    sb9 = base_liquid[base_liquid["Return 9M %"].rank(method="min", ascending=False) <= sb9_cutoff].copy()
+    sbw = base_liquid[base_liquid["Return 1W %"] >= 20].copy()
+
+    columns = [
+        signal_column_html("Qullamaggie", "KQ", kq, "Daily Return %", sort_by, tile_style, "header-yellow", 26),
+        signal_column_html("Minervini", "MM", mm, "Daily Return %", sort_by, tile_style, "header-yellow", 26),
+        signal_column_html("9M Movers", "SB9", sb9, "Daily Return %", sort_by, tile_style, "header-green", 26),
+        signal_column_html("20% Weekly", "SBW", sbw, "Return 1W %", sort_by, tile_style, "header-green", 26),
+        signal_column_html("4% Daily", "SB4", sb4, "Daily Return %", sort_by, tile_style, "header-green", 32),
+    ]
+
+    board = (
+        steve_css()
+        + "<div class='steve-board'>"
+        + "<div class='steve-nav'>"
+        + "<span>Signals</span><span>Liquid Leaders</span><span>Stage Analysis</span><span>Heatmap</span>"
+        + "<span>Industry RS</span><span>Quadrant Stocks</span><span class='active'>Gurus</span>"
+        + "</div>"
+        + "<div class='steve-controls'>"
+        + "<div class='steve-control'><div class='steve-control-label'>Sort by</div>"
+        + f"<div class='steve-select'>{escape(sort_by)} ˅</div></div>"
+        + "<div class='steve-control'><div class='steve-control-label'>Tile style</div>"
+        + "<div class='steve-radio'>"
+        + f"<span class='{'' if tile_style == 'Compact' else 'selected'}'>Detailed</span>"
+        + f"<span class='{'selected' if tile_style == 'Compact' else ''}'>Compact</span>"
+        + "</div></div></div>"
+        + "<div class='steve-filter-bar'>› &nbsp; Filters</div>"
+        + "<div class='steve-grid'>"
+        + "".join(columns)
+        + "</div></div>"
+    )
+    st.markdown(board, unsafe_allow_html=True)
+
+
+def render_market_signals(steve: pd.DataFrame, stockbee_screen: pd.DataFrame) -> None:
+    if steve.empty:
+        st.info("Nessun dato market signals disponibile.")
+        return
+
+    above_sma50 = (steve["Price"] > steve["SMA50"]).mean() * 100
+    above_sma200 = (steve["Price"] > steve["SMA200"]).mean() * 100
+    stage2 = (
+        (steve["Price"] > steve["SMA50"])
+        & (steve["SMA50"] > steve["SMA150"])
+        & (steve["SMA150"] > steve["SMA200"])
+    ).mean() * 100
+    positive_day = (steve["Daily Return %"] > 0).mean() * 100
+
+    cols = st.columns(5)
+    cols[0].metric("Stocks > SMA50", f"{above_sma50:.0f}%")
+    cols[1].metric("Stocks > SMA200", f"{above_sma200:.0f}%")
+    cols[2].metric("Stage 2 proxy", f"{stage2:.0f}%")
+    cols[3].metric("Positive day", f"{positive_day:.0f}%")
+    cols[4].metric("4% Daily", f"{len(stockbee_screen):,}")
+
+    breadth = pd.DataFrame(
+        {
+            "Signal": ["Above SMA50", "Above SMA200", "Stage 2", "Positive day"],
+            "Value": [above_sma50, above_sma200, stage2, positive_day],
+        }
+    )
+    fig = go.Figure(go.Bar(x=breadth["Signal"], y=breadth["Value"], marker_color=["#22c55e", "#2dd4bf", "#facc15", "#38bdf8"]))
+    fig.update_layout(height=320, margin=dict(l=10, r=10, t=20, b=10), yaxis=dict(range=[0, 100], ticksuffix="%"))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_stage_analysis(steve: pd.DataFrame) -> None:
+    if steve.empty:
+        st.info("Nessun dato stage disponibile.")
+        return
+
+    counts = steve["Price Structure"].value_counts().reset_index()
+    counts.columns = ["Price Structure", "Count"]
+    fig = go.Figure(go.Bar(x=counts["Price Structure"], y=counts["Count"], marker_color="#2bc79a"))
+    fig.update_layout(height=360, margin=dict(l=10, r=10, t=20, b=80), xaxis_tickangle=-25)
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(
+        steve.sort_values(["Trend Strength", "Momentum Rank"], ascending=False)[
+            ["Ticker", "Price Structure", "Trend Strength", "Momentum Rank", "ATR Extension SMA50", "Daily Return %"]
+        ].head(120).round(2),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_heatmap(steve: pd.DataFrame) -> None:
+    if steve.empty:
+        st.info("Nessun dato heatmap disponibile.")
+        return
+
+    top = steve.sort_values("Momentum Rank", ascending=False).head(60)
+    heatmap_data = top.set_index("Ticker")[["Return 1W %", "Return 1M %", "Return 3M %", "Return 6M %", "Return 9M %"]]
+    fig = go.Figure(
+        go.Heatmap(
+            z=heatmap_data.values,
+            x=heatmap_data.columns,
+            y=heatmap_data.index,
+            colorscale="RdYlGn",
+            zmid=0,
+            colorbar=dict(title="%"),
+        )
+    )
+    fig.update_layout(height=760, margin=dict(l=10, r=10, t=20, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_quadrant_stocks(steve: pd.DataFrame) -> None:
+    if steve.empty:
+        st.info("Nessun dato quadrant disponibile.")
+        return
+
+    plot_df = steve.dropna(subset=["Momentum Rank", "ATR Extension SMA50", "Daily Return %"]).copy()
+    fig = go.Figure(
+        go.Scatter(
+            x=plot_df["Momentum Rank"],
+            y=plot_df["ATR Extension SMA50"],
+            mode="markers",
+            text=plot_df["Ticker"],
+            marker=dict(
+                size=np.clip(plot_df["ADR 20D %"].fillna(3) * 2.5, 5, 22),
+                color=plot_df["Daily Return %"],
+                colorscale="RdYlGn",
+                cmid=0,
+                showscale=True,
+                colorbar=dict(title="Daily %"),
+            ),
+            hovertemplate="<b>%{text}</b><br>Momentum %{x:.1f}<br>ATR Ext %{y:.2f}<extra></extra>",
+        )
+    )
+    fig.add_hline(y=3, line_dash="dash", line_color="#facc15")
+    fig.add_hline(y=7, line_dash="dash", line_color="#ef4444")
+    fig.add_vline(x=90, line_dash="dash", line_color="#22c55e")
+    fig.update_layout(height=620, margin=dict(l=10, r=10, t=20, b=10), xaxis_title="Momentum Rank", yaxis_title="ATR Extension SMA50")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_industry_rs_placeholder() -> None:
+    st.info(
+        "Industry RS richiede dati settoriali/industry per ticker. Il dataset daily precomputato contiene prezzi e volumi; "
+        "possiamo aggiungere industry con un secondo job di metadata, evitando chiamate live lente a yfinance."
+    )
+
+
+def render_steve_dashboard(
+    metrics: pd.DataFrame,
+    q_screen: pd.DataFrame,
+    minervini_screen: pd.DataFrame,
+    guru_screen: pd.DataFrame,
+    stockbee_screen: pd.DataFrame,
+) -> None:
+    steve = add_steve_dashboard_fields(metrics)
+    steve_tabs = st.tabs(["Gurus", "Signals", "Liquid Leaders", "Stage Analysis", "Heatmap", "Industry RS", "Quadrant Stocks"])
+
+    with steve_tabs[0]:
+        control_cols = st.columns([1, 1, 3])
+        sort_by = control_cols[0].selectbox(
+            "Sort by",
+            ["ATR Extension", "Daily Return", "Momentum Rank", "Dollar Volume"],
+            index=0,
+            key="steve_sort_by",
+        )
+        tile_style = control_cols[1].radio(
+            "Tile style",
+            ["Detailed", "Compact"],
+            index=1,
+            horizontal=False,
+            key="steve_tile_style",
+        )
+        render_steve_signals_board(steve, q_screen, minervini_screen, stockbee_screen, sort_by, tile_style)
+
+    liquid = steve[steve["Daily $ Volume 20D"] >= 500_000_000].copy()
+    rts = steve[(steve["Daily $ Volume 20D"] >= 50_000_000) & (steve["ADR 20D %"] >= steve["ADR 20D %"].median())].copy()
+
+    with steve_tabs[1]:
+        render_market_signals(steve, stockbee_screen)
+
+    with steve_tabs[2]:
+        st.subheader("Liquid Leaders")
+        st.caption(
+            "Daily dollar volume 20D >= $500M, ticker raggruppati per price structure delle medie mobili."
+        )
+        liquid_matrix, liquid_meta = build_grouped_ticker_matrix(
+            liquid,
+            group_column="Price Structure",
+            sort_column="Daily $ Volume 20D",
+            max_rows=35,
+        )
+        if liquid_matrix.empty:
+            st.info("Nessun Liquid Leader con daily $ volume 20D >= $500M.")
+        else:
+            st.dataframe(style_ticker_matrix(liquid_matrix, liquid_meta), use_container_width=True, hide_index=True)
+            export_raw_section(
+                "Steve Liquid Leaders",
+                liquid.sort_values("Daily $ Volume 20D", ascending=False),
+                "steve_liquid_leaders.csv",
+            )
+
+    with steve_tabs[3]:
+        render_stage_analysis(steve)
+
+    with steve_tabs[4]:
+        render_heatmap(steve)
+
+    with steve_tabs[5]:
+        render_industry_rs_placeholder()
+
+    with steve_tabs[6]:
+        render_quadrant_stocks(steve)
+
+    with st.expander("Relative Trend Strength ed Extension Monitor", expanded=False):
+        signal_cols = st.columns(6)
+        signal_cols[0].metric("Signals", f"{len(q_screen):,}", "Qullamaggie")
+        signal_cols[1].metric("Q x M", f"{len(guru_screen):,}", "Guru")
+        signal_cols[2].metric("Stockbee", f"{len(stockbee_screen):,}", "4%+")
+        signal_cols[3].metric("Liquid Leaders", f"{len(liquid):,}", "$500M+ D$V")
+        signal_cols[4].metric("Extended", f"{int(steve['Over Extended 7x+'].sum()):,}", "7x+ ATR")
+        signal_cols[5].metric("Hyper", f"{int(steve['Hyper Extended 11x+'].sum()):,}", "11x+ ATR")
+
+        st.subheader("Relative Trend Strength")
+        rts_top = rts.sort_values(["RTS Score", "Momentum Rank"], ascending=False).head(80)
+        rts_matrix, rts_meta = build_grouped_ticker_matrix(
+            rts_top,
+            group_column="RTS Grade",
+            sort_column="RTS Score",
+            max_rows=25,
+        )
+        if rts_matrix.empty:
+            st.info("Nessun dato RTS disponibile.")
+        else:
+            st.dataframe(style_ticker_matrix(rts_matrix, rts_meta), use_container_width=True, hide_index=True)
+            st.dataframe(
+                rts_top[
+                    [
+                        "Ticker",
+                        "RTS Grade",
+                        "RTS Score",
+                        "Momentum Rank",
+                        "Trend Strength",
+                        "ADR 20D %",
+                        "Daily $ Volume 20D",
+                        "ATR Extension SMA50",
+                        "Price Structure",
+                    ]
+                ].round(2),
+                use_container_width=True,
+                hide_index=True,
+            )
+            export_raw_section("Steve RTS", rts_top, "steve_relative_trend_strength.csv")
+
+        st.subheader("Extension Monitor")
+        extension_cols = st.columns(3)
+        extension_cols[0].dataframe(
+            steve[steve["Extended 5x+"]].sort_values("ATR Extension SMA50", ascending=False).head(30)[
+                ["Ticker", "ATR Extension SMA50", "Price", "Daily $ Volume 20D", "Price Structure"]
+            ].round(2),
+            use_container_width=True,
+            hide_index=True,
+        )
+        extension_cols[1].dataframe(
+            steve[steve["Over Extended 7x+"]].sort_values("ATR Extension SMA50", ascending=False).head(30)[
+                ["Ticker", "ATR Extension SMA50", "Price", "Daily $ Volume 20D", "Price Structure"]
+            ].round(2),
+            use_container_width=True,
+            hide_index=True,
+        )
+        extension_cols[2].dataframe(
+            steve[steve["Hyper Extended 11x+"]].sort_values("ATR Extension SMA50", ascending=False).head(30)[
+                ["Ticker", "ATR Extension SMA50", "Price", "Daily $ Volume 20D", "Price Structure"]
+            ].round(2),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def build_backtest_panel(history: dict[str, pd.DataFrame], breakout_lookback: int) -> pd.DataFrame:
@@ -755,6 +1442,7 @@ def main() -> None:
     kpis[4].metric("Ultima data", str(pd.to_datetime(metrics["Date"]).max().date()))
 
     (
+        tab_steve,
         tab_qullamaggie,
         tab_backtest,
         tab_guru,
@@ -765,6 +1453,7 @@ def main() -> None:
         tab_chart,
     ) = st.tabs(
         [
+            "Steve Dashboard",
             "Qullamaggie Top 2%",
             "Backtest Q",
             "Guru Q x Minervini",
@@ -775,6 +1464,9 @@ def main() -> None:
             "Chart",
         ]
     )
+
+    with tab_steve:
+        render_steve_dashboard(metrics, q_screen, minervini_screen, guru_screen, stockbee_screen)
 
     with tab_qullamaggie:
         st.caption(

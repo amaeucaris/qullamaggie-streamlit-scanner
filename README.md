@@ -40,6 +40,7 @@ streamlit run app.py
 - Returns 1M, 3M, 6M e momentum rank top 2%.
 - Filtri: ADR% 20 giorni, price sopra SMA10/SMA20, avg volume > 200k, price > 5.
 - Mappa estensione ATR-to-SMA50 con zone non extended, extended e hyper extended.
+- Tab Steve Dashboard con Signals, Liquid Leaders, Relative Trend Strength ed Extension Monitor.
 - Tab Stockbee 4% breakout.
 - Tab Backtest Qullamaggie: segnale a fine giornata, entrata next open, uscita dopo N sedute.
 - Chart Plotly candlestick con SMA10/SMA20.
