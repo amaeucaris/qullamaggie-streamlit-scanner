@@ -1,0 +1,32 @@
+name: Update scanner data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 23 * * 1-5"
+
+permissions:
+  contents: write
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Update price history
+        run: python update_data.py --universe "All US listed" --chunk-size 50 --pause-seconds 2 --retries 2
+
+      - name: Commit updated data
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update scanner data"
+          file_pattern: data/history_prices.parquet data/metadata.json
