@@ -74,6 +74,9 @@ class ScanFilters:
     stockbee_min_price: float
     stockbee_min_volume: int
     breakout_lookback: int
+    # Qullamaggie mandatory filters (per video timestamp 01:28:00)
+    min_dollar_volume: int = 150_000_000  # $150M default; $15M small-account mode
+    min_adr_pct: float = 3.5              # ADR 20D default; small-account mode often uses 5%
 
 
 st.set_page_config(
@@ -266,8 +269,9 @@ def calculate_metrics(
         df["RET_1D_PCT"] = df["Close"].pct_change() * 100
         df["HIGH_LOOKBACK"] = df["Close"].shift(1).rolling(breakout_lookback).max()
         df["VOL_RATIO20"] = df["Volume"] / df["AVG_VOL20"]
-        df["HIGH_52W"] = df["High"].rolling(252, min_periods=200).max()
-        df["LOW_52W"] = df["Low"].rolling(252, min_periods=200).min()
+        # FIX #5: 52W High — shift(1) to avoid lookahead bias (consistent with HIGH_LOOKBACK)
+        df["HIGH_52W"] = df["High"].shift(1).rolling(252, min_periods=200).max()
+        df["LOW_52W"] = df["Low"].shift(1).rolling(252, min_periods=200).min()
         df["ATR_EXTENSION_SMA50"] = (df["Close"] - df["SMA50"]) / df["ATR14"]
         df["PCT_EXTENSION_SMA50"] = (df["Close"] / df["SMA50"] - 1) * 100
         enriched[ticker] = df
@@ -356,17 +360,25 @@ def apply_qullamaggie_filter(metrics: pd.DataFrame, filters: ScanFilters) -> pd.
         f"Top {filters.top_percent:g}% 6M",
     ]
     q_metrics = metrics.copy()
+    # Robustness: precomputed metrics from older runs may not contain this derived field.
+    if "Daily $ Volume 20D" not in q_metrics.columns:
+        q_metrics["Daily $ Volume 20D"] = q_metrics["Price"] * q_metrics["Avg Volume 20D"]
+
     q_metrics[top_rank_columns[0]] = q_metrics["Return 1M %"].rank(method="min", ascending=False) <= top_cutoff
     q_metrics[top_rank_columns[1]] = q_metrics["Return 3M %"].rank(method="min", ascending=False) <= top_cutoff
     q_metrics[top_rank_columns[2]] = q_metrics["Return 6M %"].rank(method="min", ascending=False) <= top_cutoff
 
     return q_metrics[
-        (q_metrics[top_rank_columns].any(axis=1))
-        & (q_metrics["ADR 20D %"].notna())
+        # FIX #1: Qullamaggie vuole intersezione TUTTI E TRE i timeframe, non unione
+        (q_metrics[top_rank_columns].all(axis=1))
+        # FIX #3: ADR è filtro mandatory — non solo calcolato ma forzato
+        & (q_metrics["ADR 20D %"] >= filters.min_adr_pct)
         & (q_metrics["Price > SMA10"])
         & (q_metrics["Price > SMA20"])
         & (q_metrics["Avg Volume 20D"] > filters.min_avg_volume)
         & (q_metrics["Price"] > filters.min_price)
+        # FIX #2: Dollar Volume è filtro mandatory — non solo calcolato ma forzato
+        & (q_metrics["Daily $ Volume 20D"] >= filters.min_dollar_volume)
     ].copy()
 
 
@@ -409,7 +421,9 @@ def apply_extension_filter(df: pd.DataFrame, filters: ScanFilters) -> pd.DataFra
     if not filters.only_non_extended:
         return filtered
 
-    return filtered[filtered["ATR Extension SMA50"] <= filters.max_extension_atr].copy()
+    # FIX #4: "non-extended" means <= moderate_extension_atr (3x default), NOT max_extension_atr (5x).
+    # "Extended" (3x-5x) is a core Qullamaggie setup — excluding it is wrong.
+    return filtered[filtered["ATR Extension SMA50"] <= filters.moderate_extension_atr].copy()
 
 
 def classify_extension(extension: pd.Series, filters: ScanFilters) -> pd.Series:
@@ -1387,6 +1401,16 @@ def sidebar_controls(symbols: pd.DataFrame) -> tuple[list[str], ScanFilters, lis
     stockbee_min_price = st.sidebar.number_input("Stockbee prezzo minimo", min_value=0.0, value=3.0, step=0.5)
     stockbee_min_volume = st.sidebar.number_input("Stockbee volume minimo", min_value=0, value=100_000, step=50_000)
     breakout_lookback = st.sidebar.slider("Lookback high contesto", 10, 100, DEFAULT_BREAKOUT_LOOKBACK, 5)
+    # FIX #2 & #3: Qullamaggie mandatory filters from video timestamp 01:28:00
+    # Dollar Volume > $150M (or $15M small account), ADR 20D > 3.5% (or >5% small account)
+    min_dollar_volume = st.sidebar.number_input(
+        "Dollar Volume min ($M)", min_value=0, value=150, step=10,
+        help="Qullamaggie usa $150M. Small account: $15M."
+    ) * 1_000_000
+    min_adr_pct = st.sidebar.slider(
+        "ADR minimo %", 1.0, 10.0, 3.5, 0.5,
+        help="Qullamaggie usa 3.5%. Small account: 5%."
+    )
     chunk_size = st.sidebar.slider("Ticker per batch", 25, 250, 100, 25)
     pause_seconds = st.sidebar.slider("Pausa tra batch", 0.0, 2.0, 0.2, 0.1)
 
@@ -1404,6 +1428,9 @@ def sidebar_controls(symbols: pd.DataFrame) -> tuple[list[str], ScanFilters, lis
         stockbee_min_price=stockbee_min_price,
         stockbee_min_volume=int(stockbee_min_volume),
         breakout_lookback=breakout_lookback,
+        # FIX #2 & #3: new Qullamaggie mandatory filters
+        min_dollar_volume=min_dollar_volume,
+        min_adr_pct=min_adr_pct,
     )
     return selected_symbols, filters, selected_extension_zones, chunk_size, pause_seconds
 
