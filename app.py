@@ -382,6 +382,70 @@ def apply_qullamaggie_filter(metrics: pd.DataFrame, filters: ScanFilters) -> pd.
     ].copy()
 
 
+def apply_steve_style_qullamaggie_filter(metrics: pd.DataFrame, filters: ScanFilters) -> pd.DataFrame:
+    """Broader SteveDJacobs-style KQ candidate filter.
+
+    This intentionally does NOT replace the strict Qullamaggie scanner. Strict Q requires
+    top 2% on 1M + 3M + 6M at the same time and the full dollar-volume threshold.
+    Steve-style KQ is a broader candidate board: strong momentum on at least one
+    dimension or high composite momentum, good ADR/trend/liquidity, and not hyper-extended.
+    """
+    if metrics.empty:
+        return metrics
+
+    q_metrics = metrics.copy()
+    if "Daily $ Volume 20D" not in q_metrics.columns:
+        q_metrics["Daily $ Volume 20D"] = q_metrics["Price"] * q_metrics["Avg Volume 20D"]
+
+    top_cutoff = max(1, math.ceil(len(q_metrics) * filters.top_percent / 100))
+    top_rank_columns = [
+        f"Top {filters.top_percent:g}% 1M",
+        f"Top {filters.top_percent:g}% 3M",
+        f"Top {filters.top_percent:g}% 6M",
+    ]
+    q_metrics[top_rank_columns[0]] = q_metrics["Return 1M %"].rank(method="min", ascending=False) <= top_cutoff
+    q_metrics[top_rank_columns[1]] = q_metrics["Return 3M %"].rank(method="min", ascending=False) <= top_cutoff
+    q_metrics[top_rank_columns[2]] = q_metrics["Return 6M %"].rank(method="min", ascending=False) <= top_cutoff
+
+    strict_overlap = q_metrics[top_rank_columns].all(axis=1) & (q_metrics["Daily $ Volume 20D"] >= filters.min_dollar_volume)
+    top_hits = q_metrics[top_rank_columns].sum(axis=1)
+    steve_min_dollar_volume = min(filters.min_dollar_volume, 50_000_000)
+
+    broad_momentum = (
+        (top_hits >= 1)
+        | (q_metrics["Momentum Rank"] >= 85)
+        | ((q_metrics["Return 3M %"] >= 50) & (q_metrics["Return 6M %"] >= 50))
+        | (q_metrics["Return 1M %"] >= 20)
+    )
+    liquid_trending = (
+        (q_metrics["Price"] > filters.min_price)
+        & (q_metrics["Avg Volume 20D"] > filters.min_avg_volume)
+        & (q_metrics["Daily $ Volume 20D"] >= steve_min_dollar_volume)
+        & (q_metrics["ADR 20D %"] >= filters.min_adr_pct)
+        & (q_metrics["Price > SMA10"])
+        & (q_metrics["Price > SMA20"])
+    )
+    extension_ok = q_metrics["ATR Extension SMA50"] <= filters.max_extension_atr
+
+    q_metrics["Strict Qullamaggie Overlap"] = strict_overlap.astype(object)
+    q_metrics["Steve-style KQ Score"] = (
+        top_hits.astype(float) * 25
+        + q_metrics["Momentum Rank"].fillna(0) * 0.35
+        + q_metrics["ADR 20D %"].fillna(0) * 1.5
+        + np.minimum(q_metrics["Return 3M %"].fillna(0), 150) * 0.12
+        + np.minimum(q_metrics["Return 6M %"].fillna(0), 250) * 0.08
+    )
+    q_metrics["Steve-style KQ Reason"] = np.select(
+        [strict_overlap, top_hits >= 1, q_metrics["Momentum Rank"] >= 85, q_metrics["Return 1M %"] >= 20],
+        ["Strict Q overlap", "Top 2% on at least one timeframe", "High composite momentum", "Strong 1M momentum"],
+        default="3M/6M momentum continuation",
+    )
+
+    return q_metrics[broad_momentum & liquid_trending & extension_ok].sort_values(
+        ["Steve-style KQ Score", "Momentum Rank"], ascending=False
+    ).copy()
+
+
 def apply_stockbee_filter(metrics: pd.DataFrame, filters: ScanFilters) -> pd.DataFrame:
     if metrics.empty:
         return metrics
@@ -475,6 +539,9 @@ def format_output(df: pd.DataFrame) -> pd.DataFrame:
         "Momentum Rank",
         "Universe Rank",
         *[column for column in df.columns if column.startswith("Top ")],
+        "Strict Qullamaggie Overlap",
+        "Steve-style KQ Score",
+        "Steve-style KQ Reason",
         "Return 1W %",
         "Return 1M %",
         "Return 3M %",
@@ -894,6 +961,7 @@ def signal_column_html(
 def render_steve_signals_board(
     steve: pd.DataFrame,
     q_screen: pd.DataFrame,
+    steve_style_kq_screen: pd.DataFrame,
     minervini_screen: pd.DataFrame,
     stockbee_screen: pd.DataFrame,
     sort_by: str,
@@ -903,7 +971,7 @@ def render_steve_signals_board(
         st.info("Nessun dato disponibile per la dashboard Steve.")
         return
 
-    kq = prepare_signal_df(q_screen, steve)
+    kq = prepare_signal_df(steve_style_kq_screen, steve)
     mm = prepare_signal_df(minervini_screen, steve)
     sb4 = prepare_signal_df(stockbee_screen, steve)
     base_liquid = steve[(steve["Price"] > 5) & (steve["Avg Volume 20D"] > 200_000)].copy()
@@ -1055,6 +1123,7 @@ def render_industry_rs_placeholder() -> None:
 def render_steve_dashboard(
     metrics: pd.DataFrame,
     q_screen: pd.DataFrame,
+    steve_style_kq_screen: pd.DataFrame,
     minervini_screen: pd.DataFrame,
     guru_screen: pd.DataFrame,
     stockbee_screen: pd.DataFrame,
@@ -1075,7 +1144,8 @@ def render_steve_dashboard(
         stockbee_context = stockbee_screen[stockbee_screen["Ticker"].isin(q_tickers)].copy()
         st.caption(
             "Filtro Steve attivo: le sezioni Liquid Leaders / Stage / Heatmap / RTS / Quadrant mostrano "
-            "solo ticker già presenti nello scanner Qullamaggie Top 2% su 1M + 3M + 6M."
+            "solo ticker già presenti nello scanner Qullamaggie Top 2% su 1M + 3M + 6M. "
+            "La colonna Gurus KQ resta Steve-style per confrontarla con lo screenshot di Steve."
         )
     else:
         steve = steve_all
@@ -1107,7 +1177,8 @@ def render_steve_dashboard(
             horizontal=False,
             key="steve_tile_style",
         )
-        render_steve_signals_board(steve, q_screen, minervini_screen, stockbee_context, sort_by, tile_style)
+        gurus_steve = steve_all if strict_q_context else steve
+        render_steve_signals_board(gurus_steve, q_screen, steve_style_kq_screen, minervini_screen, stockbee_context, sort_by, tile_style)
 
     liquid = steve[steve["Daily $ Volume 20D"] >= 500_000_000].copy()
     rts = steve[(steve["Daily $ Volume 20D"] >= 50_000_000) & (steve["ADR 20D %"] >= steve["ADR 20D %"].median())].copy()
@@ -1549,6 +1620,10 @@ def main() -> None:
         add_extension_buckets(apply_extension_filter(apply_qullamaggie_filter(metrics, filters), filters), filters),
         selected_extension_zones,
     )
+    steve_style_kq_screen = apply_extension_zone_filter(
+        add_extension_buckets(apply_steve_style_qullamaggie_filter(metrics, filters), filters),
+        selected_extension_zones,
+    )
     minervini_screen = apply_extension_zone_filter(
         add_extension_buckets(apply_extension_filter(apply_minervini_filter(metrics), filters), filters),
         selected_extension_zones,
@@ -1560,17 +1635,19 @@ def main() -> None:
     extension_screen = apply_extension_zone_filter(add_extension_buckets(metrics, filters), selected_extension_zones)
     stockbee_screen = apply_stockbee_filter(metrics, filters)
 
-    kpis = st.columns(5)
+    kpis = st.columns(6)
     kpis[0].metric("Ticker con dati", f"{len(metrics):,}")
-    kpis[1].metric("Qullamaggie top", f"{len(q_screen):,}")
-    kpis[2].metric("Q x Minervini", f"{len(guru_screen):,}")
-    kpis[3].metric("Stockbee 4%", f"{len(stockbee_screen):,}")
-    kpis[4].metric("Ultima data", str(pd.to_datetime(metrics["Date"]).max().date()))
+    kpis[1].metric("Q strict", f"{len(q_screen):,}")
+    kpis[2].metric("Steve-style KQ", f"{len(steve_style_kq_screen):,}")
+    kpis[3].metric("Q x Minervini", f"{len(guru_screen):,}")
+    kpis[4].metric("Stockbee 4%", f"{len(stockbee_screen):,}")
+    kpis[5].metric("Ultima data", str(pd.to_datetime(metrics["Date"]).max().date()))
 
     view = st.radio(
         "Vista",
         [
             "Steve Dashboard",
+            "Steve-style KQ",
             "Qullamaggie Top 2%",
             "Backtest Q",
             "Guru Q x Minervini",
@@ -1584,7 +1661,31 @@ def main() -> None:
     )
 
     if view == "Steve Dashboard":
-        render_steve_dashboard(metrics, q_screen, minervini_screen, guru_screen, stockbee_screen)
+        render_steve_dashboard(metrics, q_screen, steve_style_kq_screen, minervini_screen, guru_screen, stockbee_screen)
+
+    elif view == "Steve-style KQ":
+        st.caption(
+            "Vista ampia separata per replicare meglio la colonna Steve Jacobs Qullamaggie · KQ. "
+            "Non sostituisce Qullamaggie strict: qui basta momentum forte su almeno una dimensione o momentum composito alto, "
+            "con ADR/trend/liquidità e ATR extension <= soglia max. Usa $50M come cap rilassato del dollar volume quando il default strict è $150M."
+        )
+        st.dataframe(
+            format_output(steve_style_kq_screen),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Momentum Rank": st.column_config.NumberColumn(format="%.1f"),
+                "Steve-style KQ Score": st.column_config.NumberColumn(format="%.1f"),
+                "Return 1M %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Return 3M %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Return 6M %": st.column_config.NumberColumn(format="%.1f%%"),
+                "ADR 20D %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Daily Return %": st.column_config.NumberColumn(format="%.1f%%"),
+                "ATR Extension SMA50": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+        export_section("Steve-style KQ", steve_style_kq_screen, "steve_style_kq_scan.csv")
 
     elif view == "Qullamaggie Top 2%":
         st.caption(
