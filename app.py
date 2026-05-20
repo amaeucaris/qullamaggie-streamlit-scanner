@@ -1059,7 +1059,32 @@ def render_steve_dashboard(
     guru_screen: pd.DataFrame,
     stockbee_screen: pd.DataFrame,
 ) -> None:
-    steve = add_steve_dashboard_fields(metrics)
+    steve_all = add_steve_dashboard_fields(metrics)
+    q_tickers = set(q_screen["Ticker"]) if not q_screen.empty else set()
+    strict_q_context = st.toggle(
+        "Steve Dashboard: solo Qullamaggie Top 2% 1M+3M+6M",
+        value=True,
+        help=(
+            "ON = tutte le sezioni contestuali Steve mostrano solo i ticker che passano lo scanner "
+            "Qullamaggie puro: top 2% contemporaneamente su 1M, 3M e 6M, più filtri ADR/liquidità/medie. "
+            "OFF = dashboard di contesto sull'universo completo."
+        ),
+    )
+    if strict_q_context:
+        steve = steve_all[steve_all["Ticker"].isin(q_tickers)].copy()
+        stockbee_context = stockbee_screen[stockbee_screen["Ticker"].isin(q_tickers)].copy()
+        st.caption(
+            "Filtro Steve attivo: le sezioni Liquid Leaders / Stage / Heatmap / RTS / Quadrant mostrano "
+            "solo ticker già presenti nello scanner Qullamaggie Top 2% su 1M + 3M + 6M."
+        )
+    else:
+        steve = steve_all
+        stockbee_context = stockbee_screen
+        st.caption(
+            "Filtro Steve disattivato: queste sezioni sono dashboard di contesto sull'universo completo, "
+            "non lo scanner Qullamaggie puro."
+        )
+
     steve_view = st.radio(
         "Steve section",
         ["Gurus", "Signals", "Liquid Leaders", "Stage Analysis", "Heatmap", "Industry RS", "Quadrant Stocks"],
@@ -1082,13 +1107,13 @@ def render_steve_dashboard(
             horizontal=False,
             key="steve_tile_style",
         )
-        render_steve_signals_board(steve, q_screen, minervini_screen, stockbee_screen, sort_by, tile_style)
+        render_steve_signals_board(steve, q_screen, minervini_screen, stockbee_context, sort_by, tile_style)
 
     liquid = steve[steve["Daily $ Volume 20D"] >= 500_000_000].copy()
     rts = steve[(steve["Daily $ Volume 20D"] >= 50_000_000) & (steve["ADR 20D %"] >= steve["ADR 20D %"].median())].copy()
 
     if steve_view == "Signals":
-        render_market_signals(steve, stockbee_screen)
+        render_market_signals(steve, stockbee_context)
 
     if steve_view == "Liquid Leaders":
         st.subheader("Liquid Leaders")
@@ -1249,16 +1274,20 @@ def run_qullamaggie_backtest(
 
     top_columns = [f"Top {filters.top_percent:g}% 1M", f"Top {filters.top_percent:g}% 3M", f"Top {filters.top_percent:g}% 6M"]
     signal = panel[
-        panel[top_columns].any(axis=1)
+        # Keep the backtest aligned with the live Qullamaggie scanner:
+        # intersection across all three momentum windows, not union.
+        panel[top_columns].all(axis=1)
         & (panel["Close"] > panel["SMA10"])
         & (panel["Close"] > panel["SMA20"])
         & (panel["AVG_VOL20"] > filters.min_avg_volume)
         & (panel["Close"] > filters.min_price)
-        & panel["ADR20_PCT"].notna()
+        & (panel["ADR20_PCT"] >= filters.min_adr_pct)
+        & ((panel["Close"] * panel["AVG_VOL20"]) >= filters.min_dollar_volume)
+        & (panel["ATR Extension SMA50"] >= filters.min_extension_atr)
     ].copy()
 
     if use_non_extended:
-        signal = signal[signal["ATR Extension SMA50"] <= filters.max_extension_atr]
+        signal = signal[signal["ATR Extension SMA50"] <= filters.moderate_extension_atr]
 
     if signal.empty:
         return pd.DataFrame(), pd.DataFrame()
@@ -1559,8 +1588,9 @@ def main() -> None:
 
     elif view == "Qullamaggie Top 2%":
         st.caption(
-            "Scanner Qullamaggie principale: top momentum per 1M/3M/6M, ADR 20D, prezzo sopra SMA10/SMA20, "
-            "avg volume e prezzo minimo. Le zone di estensione servono per evitare titoli troppo tirati."
+            "Scanner Qullamaggie principale: top 2% contemporaneamente su 1M + 3M + 6M, ADR 20D, "
+            "dollar volume, prezzo sopra SMA10/SMA20, avg volume e prezzo minimo. Le zone di estensione "
+            "servono per evitare titoli troppo tirati."
         )
         st.dataframe(
             format_output(q_screen),
@@ -1581,8 +1611,9 @@ def main() -> None:
 
     elif view == "Backtest Q":
         st.caption(
-            "Backtest meccanico del solo scanner Qullamaggie: segnale a fine giornata, entrata il giorno dopo "
-            "in apertura, uscita dopo N sedute. Non replica l'entry discrezionale ORH di Qullamaggie."
+            "Backtest meccanico del solo scanner Qullamaggie: top 2% contemporaneamente su 1M + 3M + 6M, "
+            "stessi filtri principali di ADR/liquidità/medie/estensione dello scanner live, segnale a fine giornata, "
+            "entrata il giorno dopo in apertura, uscita dopo N sedute. Non replica l'entry discrezionale ORH di Qullamaggie."
         )
         bt_cols = st.columns(3)
         hold_days = bt_cols[0].number_input("Hold giorni", min_value=1, max_value=60, value=10, step=1)
