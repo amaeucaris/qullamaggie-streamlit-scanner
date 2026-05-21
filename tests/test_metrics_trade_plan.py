@@ -73,6 +73,34 @@ def test_calculate_metrics_outputs_true_rolling_dollar_volume_20d_not_last_price
     assert row["Daily $ Volume 20D"] != fallback
 
 
+def test_steve_dashboard_fields_preserve_true_rolling_dollar_volume():
+    metrics = pd.DataFrame(
+        [
+            {
+                "Ticker": "TEST",
+                "Price": 30.0,
+                "Avg Volume 20D": 1_000_000,
+                "Daily $ Volume 20D": 20_500_000.0,
+                "Momentum Rank": 90.0,
+                "ATR Extension SMA50": 2.0,
+                "Daily Return %": 1.0,
+                "Prev Close": 29.5,
+                "52W High": 40.0,
+                "SMA10": 29.0,
+                "SMA20": 28.0,
+                "SMA50": 25.0,
+                "SMA150": 20.0,
+                "SMA200": 18.0,
+            }
+        ]
+    )
+
+    enriched = app.add_steve_dashboard_fields(metrics)
+
+    assert enriched.iloc[0]["Daily $ Volume 20D"] == 20_500_000.0
+    assert enriched.iloc[0]["Daily $ Volume 20D"] != 30_000_000.0
+
+
 def test_stop_to_adr_ratio_classifies_trade_risk_buckets():
     from qull_scanner.trade_plan import classify_stop_to_adr
 
@@ -80,6 +108,65 @@ def test_stop_to_adr_ratio_classifies_trade_risk_buckets():
     assert classify_stop_to_adr(1.00) == "OK"
     assert classify_stop_to_adr(1.25) == "Wide"
     assert classify_stop_to_adr(1.51) == "Reject"
+
+
+def test_add_trade_plan_columns_enriches_scanner_candidates_for_export():
+    from qull_scanner.trade_plan import add_trade_plan_columns
+
+    candidates = pd.DataFrame(
+        [
+            {
+                "Ticker": "TEST",
+                "Price": 100.0,
+                "Breakout Level": 99.0,
+                "Base Low": 94.0,
+                "ADR 20D %": 4.0,
+                "Daily $ Volume 20D": 180_000_000.0,
+                "ATR Extension SMA50": 2.5,
+            }
+        ]
+    )
+
+    enriched = add_trade_plan_columns(candidates, setup_type="Strict Q Breakout")
+    row = enriched.iloc[0]
+
+    assert row["Trade Setup Type"] == "Strict Q Breakout"
+    assert row["Trade Entry Trigger"] == 100.10
+    assert row["Trade Stop"] == 94.00
+    assert row["Trade Risk %"] == 6.09
+    assert row["Stop / ADR"] == 1.52
+    assert row["Stop Bucket"] == "Reject"
+
+
+def test_format_output_keeps_trade_plan_columns_visible_near_breakout_level():
+    output = app.format_output(
+        pd.DataFrame(
+            [
+                {
+                    "Ticker": "TEST",
+                    "Price": 100.0,
+                    "Trade Setup Type": "Strict Q Breakout",
+                    "Trade Entry Trigger": 100.10,
+                    "Trade Stop": 94.00,
+                    "Trade Risk %": 6.09,
+                    "Stop / ADR": 1.52,
+                    "Stop Bucket": "Reject",
+                    "Breakout Level": 99.0,
+                }
+            ]
+        )
+    )
+
+    columns = list(output.columns)
+    assert columns[columns.index("Trade Setup Type") : columns.index("Breakout Level") + 1] == [
+        "Trade Setup Type",
+        "Trade Entry Trigger",
+        "Trade Stop",
+        "Trade Risk %",
+        "Stop / ADR",
+        "Stop Bucket",
+        "Breakout Level",
+    ]
 
 
 def test_lineage_explains_strict_qullamaggie_pass_conditions():

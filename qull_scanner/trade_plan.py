@@ -4,6 +4,8 @@ import math
 from dataclasses import dataclass
 from typing import Mapping, Any
 
+import pandas as pd
+
 
 @dataclass(frozen=True)
 class TradePlan:
@@ -72,3 +74,24 @@ def build_breakout_trade_plan(row: Mapping[str, Any], setup_type: str = "Breakou
         extension_atr_sma50=float(row.get("ATR Extension SMA50", 0.0)) if "ATR Extension SMA50" in row else None,
         reason=str(row.get("Reason", "")),
     )
+
+
+def add_trade_plan_columns(candidates: pd.DataFrame, setup_type: str = "Breakout") -> pd.DataFrame:
+    """Append non-execution trade-plan columns to scanner candidates.
+
+    The function is intentionally deterministic and side-effect-free: it does not
+    place trades, size positions, or decide entries. It only exposes the risk
+    card needed for manual review/export.
+    """
+    if candidates.empty:
+        return candidates
+
+    output = candidates.copy()
+    plans = [build_breakout_trade_plan(row, setup_type=setup_type) for row in output.to_dict("records")]
+    output["Trade Setup Type"] = [plan.setup_type for plan in plans]
+    output["Trade Entry Trigger"] = [plan.entry_trigger for plan in plans]
+    output["Trade Stop"] = [plan.stop for plan in plans]
+    output["Trade Risk %"] = [plan.risk_pct for plan in plans]
+    output["Stop / ADR"] = [plan.stop_to_adr_ratio for plan in plans]
+    output["Stop Bucket"] = [plan.stop_bucket for plan in plans]
+    return output

@@ -25,6 +25,7 @@ from qull_scanner.filters import (
     apply_stockbee_filter as core_apply_stockbee_filter,
 )
 from qull_scanner.metrics import rolling_dollar_volume
+from qull_scanner.trade_plan import add_trade_plan_columns
 
 
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
@@ -486,6 +487,12 @@ def format_output(df: pd.DataFrame) -> pd.DataFrame:
         "SMA200",
         "Minervini Trend Template",
         "Green Candle",
+        "Trade Setup Type",
+        "Trade Entry Trigger",
+        "Trade Stop",
+        "Trade Risk %",
+        "Stop / ADR",
+        "Stop Bucket",
         "Breakout Level",
     ]
     visible = [column for column in ordered if column in df.columns]
@@ -556,7 +563,8 @@ def add_steve_dashboard_fields(metrics: pd.DataFrame) -> pd.DataFrame:
         return metrics
 
     output = metrics.copy()
-    output["Daily $ Volume 20D"] = output["Price"] * output["Avg Volume 20D"]
+    if "Daily $ Volume 20D" not in output.columns:
+        output["Daily $ Volume 20D"] = output["Price"] * output["Avg Volume 20D"]
     output["Price Structure"] = output.apply(classify_price_structure, axis=1)
     output["Negative Structure"] = output["Price Structure"].str.contains("Negative", na=False)
     output["Trend Strength"] = output.apply(calculate_trend_strength, axis=1)
@@ -1538,9 +1546,12 @@ def main() -> None:
         st.warning("Nessun dato valido ricevuto. Prova a ridurre i batch o premere Refresh dati.")
         return
 
-    q_screen = apply_extension_zone_filter(
-        add_extension_buckets(apply_extension_filter(apply_qullamaggie_filter(metrics, filters), filters), filters),
-        selected_extension_zones,
+    q_screen = add_trade_plan_columns(
+        apply_extension_zone_filter(
+            add_extension_buckets(apply_extension_filter(apply_qullamaggie_filter(metrics, filters), filters), filters),
+            selected_extension_zones,
+        ),
+        setup_type="Strict Q Breakout",
     )
     steve_style_kq_screen = apply_extension_zone_filter(
         add_extension_buckets(apply_steve_style_qullamaggie_filter(metrics, filters), filters),
