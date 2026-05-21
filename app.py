@@ -1475,6 +1475,7 @@ def sidebar_controls(symbols: pd.DataFrame) -> tuple[list[str], ScanFilters, lis
 
 def main() -> None:
     st.title("Qullamaggie NASDAQ Scanner")
+    st.caption(f"Build: {APP_BUILD_MARKER}")
 
     controls = st.columns([1, 1, 2, 3])
     with controls[0]:
