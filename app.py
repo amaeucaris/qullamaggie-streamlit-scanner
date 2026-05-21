@@ -16,6 +16,14 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
+from qull_scanner.filters import (
+    ScannerThresholds,
+    apply_guru_filter as core_apply_guru_filter,
+    apply_minervini_filter as core_apply_minervini_filter,
+    apply_qullamaggie_filter as core_apply_qullamaggie_filter,
+    apply_steve_style_qullamaggie_filter as core_apply_steve_style_qullamaggie_filter,
+    apply_stockbee_filter as core_apply_stockbee_filter,
+)
 from qull_scanner.metrics import rolling_dollar_volume
 
 
@@ -354,131 +362,38 @@ def calculate_metrics(
     return metrics.sort_values("Momentum Rank", ascending=False), enriched
 
 
+def scanner_thresholds(filters: ScanFilters) -> ScannerThresholds:
+    return ScannerThresholds(
+        min_price=filters.min_price,
+        min_avg_volume=filters.min_avg_volume,
+        top_percent=filters.top_percent,
+        min_breakout_pct=filters.min_breakout_pct,
+        stockbee_min_price=filters.stockbee_min_price,
+        stockbee_min_volume=filters.stockbee_min_volume,
+        min_dollar_volume=filters.min_dollar_volume,
+        min_adr_pct=filters.min_adr_pct,
+        max_extension_atr=filters.max_extension_atr,
+    )
+
+
 def apply_qullamaggie_filter(metrics: pd.DataFrame, filters: ScanFilters) -> pd.DataFrame:
-    if metrics.empty:
-        return metrics
-
-    top_cutoff = max(1, math.ceil(len(metrics) * filters.top_percent / 100))
-    top_rank_columns = [
-        f"Top {filters.top_percent:g}% 1M",
-        f"Top {filters.top_percent:g}% 3M",
-        f"Top {filters.top_percent:g}% 6M",
-    ]
-    q_metrics = metrics.copy()
-    # Robustness: precomputed metrics from older runs may not contain this derived field.
-    if "Daily $ Volume 20D" not in q_metrics.columns:
-        q_metrics["Daily $ Volume 20D"] = q_metrics["Price"] * q_metrics["Avg Volume 20D"]
-
-    q_metrics[top_rank_columns[0]] = q_metrics["Return 1M %"].rank(method="min", ascending=False) <= top_cutoff
-    q_metrics[top_rank_columns[1]] = q_metrics["Return 3M %"].rank(method="min", ascending=False) <= top_cutoff
-    q_metrics[top_rank_columns[2]] = q_metrics["Return 6M %"].rank(method="min", ascending=False) <= top_cutoff
-
-    return q_metrics[
-        # FIX #1: Qullamaggie vuole intersezione TUTTI E TRE i timeframe, non unione
-        (q_metrics[top_rank_columns].all(axis=1))
-        # FIX #3: ADR è filtro mandatory — non solo calcolato ma forzato
-        & (q_metrics["ADR 20D %"] >= filters.min_adr_pct)
-        & (q_metrics["Price > SMA10"])
-        & (q_metrics["Price > SMA20"])
-        & (q_metrics["Avg Volume 20D"] > filters.min_avg_volume)
-        & (q_metrics["Price"] > filters.min_price)
-        # FIX #2: Dollar Volume è filtro mandatory — non solo calcolato ma forzato
-        & (q_metrics["Daily $ Volume 20D"] >= filters.min_dollar_volume)
-    ].copy()
+    return core_apply_qullamaggie_filter(metrics, scanner_thresholds(filters))
 
 
 def apply_steve_style_qullamaggie_filter(metrics: pd.DataFrame, filters: ScanFilters) -> pd.DataFrame:
-    """Broader SteveDJacobs-style KQ candidate filter.
-
-    This intentionally does NOT replace the strict Qullamaggie scanner. Strict Q requires
-    top 2% on 1M + 3M + 6M at the same time and the full dollar-volume threshold.
-    Steve-style KQ is a broader candidate board: strong momentum on at least one
-    dimension or high composite momentum, good ADR/trend/liquidity, and not hyper-extended.
-    """
-    if metrics.empty:
-        return metrics
-
-    q_metrics = metrics.copy()
-    if "Daily $ Volume 20D" not in q_metrics.columns:
-        q_metrics["Daily $ Volume 20D"] = q_metrics["Price"] * q_metrics["Avg Volume 20D"]
-
-    top_cutoff = max(1, math.ceil(len(q_metrics) * filters.top_percent / 100))
-    top_rank_columns = [
-        f"Top {filters.top_percent:g}% 1M",
-        f"Top {filters.top_percent:g}% 3M",
-        f"Top {filters.top_percent:g}% 6M",
-    ]
-    q_metrics[top_rank_columns[0]] = q_metrics["Return 1M %"].rank(method="min", ascending=False) <= top_cutoff
-    q_metrics[top_rank_columns[1]] = q_metrics["Return 3M %"].rank(method="min", ascending=False) <= top_cutoff
-    q_metrics[top_rank_columns[2]] = q_metrics["Return 6M %"].rank(method="min", ascending=False) <= top_cutoff
-
-    strict_overlap = q_metrics[top_rank_columns].all(axis=1) & (q_metrics["Daily $ Volume 20D"] >= filters.min_dollar_volume)
-    top_hits = q_metrics[top_rank_columns].sum(axis=1)
-    steve_min_dollar_volume = min(filters.min_dollar_volume, 50_000_000)
-
-    broad_momentum = (
-        (top_hits >= 1)
-        | (q_metrics["Momentum Rank"] >= 85)
-        | ((q_metrics["Return 3M %"] >= 50) & (q_metrics["Return 6M %"] >= 50))
-        | (q_metrics["Return 1M %"] >= 20)
-    )
-    liquid_trending = (
-        (q_metrics["Price"] > filters.min_price)
-        & (q_metrics["Avg Volume 20D"] > filters.min_avg_volume)
-        & (q_metrics["Daily $ Volume 20D"] >= steve_min_dollar_volume)
-        & (q_metrics["ADR 20D %"] >= filters.min_adr_pct)
-        & (q_metrics["Price > SMA10"])
-        & (q_metrics["Price > SMA20"])
-    )
-    extension_ok = q_metrics["ATR Extension SMA50"] <= filters.max_extension_atr
-
-    q_metrics["Strict Qullamaggie Overlap"] = strict_overlap.astype(object)
-    q_metrics["Steve-style KQ Score"] = (
-        top_hits.astype(float) * 25
-        + q_metrics["Momentum Rank"].fillna(0) * 0.35
-        + q_metrics["ADR 20D %"].fillna(0) * 1.5
-        + np.minimum(q_metrics["Return 3M %"].fillna(0), 150) * 0.12
-        + np.minimum(q_metrics["Return 6M %"].fillna(0), 250) * 0.08
-    )
-    q_metrics["Steve-style KQ Reason"] = np.select(
-        [strict_overlap, top_hits >= 1, q_metrics["Momentum Rank"] >= 85, q_metrics["Return 1M %"] >= 20],
-        ["Strict Q overlap", "Top 2% on at least one timeframe", "High composite momentum", "Strong 1M momentum"],
-        default="3M/6M momentum continuation",
-    )
-
-    return q_metrics[broad_momentum & liquid_trending & extension_ok].sort_values(
-        ["Steve-style KQ Score", "Momentum Rank"], ascending=False
-    ).copy()
+    return core_apply_steve_style_qullamaggie_filter(metrics, scanner_thresholds(filters))
 
 
 def apply_stockbee_filter(metrics: pd.DataFrame, filters: ScanFilters) -> pd.DataFrame:
-    if metrics.empty:
-        return metrics
-
-    return metrics[
-        (metrics["Daily Return %"] >= filters.min_breakout_pct)
-        & (metrics["Volume"] > metrics["Prev Volume"])
-        & (metrics["Volume"] >= filters.stockbee_min_volume)
-        & (metrics["Price"] > filters.stockbee_min_price)
-    ].copy()
+    return core_apply_stockbee_filter(metrics, scanner_thresholds(filters))
 
 
 def apply_minervini_filter(metrics: pd.DataFrame) -> pd.DataFrame:
-    if metrics.empty:
-        return metrics
-
-    return metrics[
-        (metrics["Minervini Trend Template"])
-        & (metrics["Green Candle"])
-    ].copy()
+    return core_apply_minervini_filter(metrics)
 
 
 def apply_guru_filter(qullamaggie_screen: pd.DataFrame, minervini_screen: pd.DataFrame) -> pd.DataFrame:
-    if qullamaggie_screen.empty or minervini_screen.empty:
-        return pd.DataFrame(columns=qullamaggie_screen.columns)
-
-    minervini_tickers = set(minervini_screen["Ticker"])
-    return qullamaggie_screen[qullamaggie_screen["Ticker"].isin(minervini_tickers)].copy()
+    return core_apply_guru_filter(qullamaggie_screen, minervini_screen)
 
 
 def apply_extension_filter(df: pd.DataFrame, filters: ScanFilters) -> pd.DataFrame:
@@ -544,6 +459,7 @@ def format_output(df: pd.DataFrame) -> pd.DataFrame:
         "Momentum Rank",
         "Universe Rank",
         *[column for column in df.columns if column.startswith("Top ")],
+        "Strict Q Lineage",
         "Strict Qullamaggie Overlap",
         "Steve-style KQ Score",
         "Steve-style KQ Reason",
