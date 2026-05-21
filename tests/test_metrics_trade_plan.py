@@ -138,6 +138,29 @@ def test_add_trade_plan_columns_enriches_scanner_candidates_for_export():
     assert row["Stop Bucket"] == "Reject"
 
 
+def test_add_trade_plan_columns_handles_missing_base_low_with_sma20_fallback():
+    from qull_scanner.trade_plan import add_trade_plan_columns
+
+    candidates = pd.DataFrame(
+        [
+            {
+                "Ticker": "NOBASE",
+                "Price": 50.0,
+                "Breakout Level": 51.0,
+                "Base Low": pd.NA,
+                "SMA20": 47.0,
+                "ADR 20D %": 5.0,
+                "Daily $ Volume 20D": 200_000_000.0,
+            }
+        ]
+    )
+
+    enriched = add_trade_plan_columns(candidates, setup_type="Strict Q Breakout")
+
+    assert enriched.iloc[0]["Trade Stop"] == 47.0
+    assert enriched.iloc[0]["Trade Risk %"] > 0
+
+
 def test_format_output_keeps_trade_plan_columns_visible_near_breakout_level():
     output = app.format_output(
         pd.DataFrame(

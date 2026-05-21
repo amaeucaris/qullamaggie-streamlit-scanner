@@ -44,6 +44,17 @@ def classify_stop_to_adr(stop_to_adr_ratio: float) -> str:
     return "Reject"
 
 
+def _finite_or_default(value: Any, default: float) -> float:
+    """Convert scanner values to floats, falling back for pd.NA/NaN/None."""
+    try:
+        if value is None or pd.isna(value):
+            return default
+        converted = float(value)
+    except (TypeError, ValueError):
+        return default
+    return converted if math.isfinite(converted) else default
+
+
 def build_breakout_trade_plan(row: Mapping[str, Any], setup_type: str = "Breakout") -> TradePlan:
     """Build a decision-oriented trade plan from a scanner candidate row.
 
@@ -51,13 +62,14 @@ def build_breakout_trade_plan(row: Mapping[str, Any], setup_type: str = "Breakou
     risk card for review.
     """
     ticker = str(row.get("Ticker", ""))
-    price = float(row["Price"])
-    breakout_level = float(row.get("Breakout Level", price))
-    base_low = float(row.get("Base Low", row.get("SMA20", price)))
+    price = _finite_or_default(row.get("Price"), 0.0)
+    breakout_level = _finite_or_default(row.get("Breakout Level"), price)
+    sma20 = _finite_or_default(row.get("SMA20"), price)
+    base_low = _finite_or_default(row.get("Base Low"), sma20)
     entry = max(price, breakout_level) * 1.001
     stop = base_low
     risk_pct = ((entry - stop) / entry) * 100 if entry > 0 else math.inf
-    adr = float(row.get("ADR 20D %", 0.0))
+    adr = _finite_or_default(row.get("ADR 20D %"), 0.0)
     stop_to_adr = risk_pct / adr if adr > 0 else math.inf
     return TradePlan(
         ticker=ticker,
@@ -69,9 +81,9 @@ def build_breakout_trade_plan(row: Mapping[str, Any], setup_type: str = "Breakou
         stop_to_adr_ratio=round(stop_to_adr, 2) if math.isfinite(stop_to_adr) else math.inf,
         stop_bucket=classify_stop_to_adr(stop_to_adr),
         adr_20d_pct=adr,
-        dollar_volume_20d=float(row.get("Daily $ Volume 20D", 0.0)),
-        distance_to_pivot_pct=float(row.get("Distance to Pivot %", 0.0)) if "Distance to Pivot %" in row else None,
-        extension_atr_sma50=float(row.get("ATR Extension SMA50", 0.0)) if "ATR Extension SMA50" in row else None,
+        dollar_volume_20d=_finite_or_default(row.get("Daily $ Volume 20D"), 0.0),
+        distance_to_pivot_pct=_finite_or_default(row.get("Distance to Pivot %"), 0.0) if "Distance to Pivot %" in row else None,
+        extension_atr_sma50=_finite_or_default(row.get("ATR Extension SMA50"), 0.0) if "ATR Extension SMA50" in row else None,
         reason=str(row.get("Reason", "")),
     )
 
