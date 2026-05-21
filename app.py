@@ -25,6 +25,7 @@ from qull_scanner.filters import (
     apply_stockbee_filter as core_apply_stockbee_filter,
 )
 from qull_scanner.metrics import rolling_dollar_volume
+from qull_scanner.setup import add_base_setup_columns
 from qull_scanner.trade_plan import add_trade_plan_columns
 
 
@@ -487,6 +488,13 @@ def format_output(df: pd.DataFrame) -> pd.DataFrame:
         "SMA200",
         "Minervini Trend Template",
         "Green Candle",
+        "Base Pivot",
+        "Base Low",
+        "Base Depth %",
+        "Distance to Pivot %",
+        "Prior Move %",
+        "Base Bars",
+        "MA Surfing 10/20",
         "Trade Setup Type",
         "Trade Entry Trigger",
         "Trade Stop",
@@ -1547,9 +1555,12 @@ def main() -> None:
         return
 
     q_screen = add_trade_plan_columns(
-        apply_extension_zone_filter(
-            add_extension_buckets(apply_extension_filter(apply_qullamaggie_filter(metrics, filters), filters), filters),
-            selected_extension_zones,
+        add_base_setup_columns(
+            apply_extension_zone_filter(
+                add_extension_buckets(apply_extension_filter(apply_qullamaggie_filter(metrics, filters), filters), filters),
+                selected_extension_zones,
+            ),
+            enriched_history,
         ),
         setup_type="Strict Q Breakout",
     )
