@@ -16,6 +16,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
+from qull_scanner.metrics import rolling_dollar_volume
+
 
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
@@ -265,6 +267,7 @@ def calculate_metrics(
         df["SMA200"] = sma(df["Close"], length=200)
         df["ATR14"] = atr(df["High"], df["Low"], df["Close"], length=14)
         df["AVG_VOL20"] = sma(df["Volume"], length=20)
+        df["DOLLAR_VOL20"] = rolling_dollar_volume(df["Close"], df["Volume"], length=20)
         df["ADR_PCT"] = ((df["High"] / df["Low"]) - 1).replace([np.inf, -np.inf], np.nan) * 100
         df["ADR20_PCT"] = sma(df["ADR_PCT"], length=20)
         df["RET_1D_PCT"] = df["Close"].pct_change() * 100
@@ -311,6 +314,7 @@ def calculate_metrics(
                 "ADR 20D %": last["ADR20_PCT"],
                 "Volume": last["Volume"],
                 "Avg Volume 20D": last["AVG_VOL20"],
+                "Daily $ Volume 20D": last["DOLLAR_VOL20"],
                 "Volume Ratio 20D": last["VOL_RATIO20"],
                 "Prev Volume": previous["Volume"],
                 "SMA10": last["SMA10"],
@@ -557,6 +561,7 @@ def format_output(df: pd.DataFrame) -> pd.DataFrame:
         "Volume",
         "Prev Volume",
         "Avg Volume 20D",
+        "Daily $ Volume 20D",
         "Volume Ratio 20D",
         "SMA10",
         "SMA20",
