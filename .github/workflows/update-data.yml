@@ -8,9 +8,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: update-scanner-data
+  cancel-in-progress: true
+
 jobs:
   update-data:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

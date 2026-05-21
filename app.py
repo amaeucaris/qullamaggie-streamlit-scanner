@@ -37,7 +37,7 @@ HISTORY_FILE = DATA_DIR / "history_prices.parquet"
 METRICS_FILE = DATA_DIR / "scanner_metrics.parquet"
 METADATA_FILE = DATA_DIR / "metadata.json"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-05-20-steve-style-kq-redeploy"
+APP_BUILD_MARKER = "2026-05-21-streamlit-deploy-core-base-detector"
 RETURN_WINDOWS = {
     "1W": 5,
     "1M": 21,
