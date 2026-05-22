@@ -15,7 +15,7 @@ concurrency:
 jobs:
   update-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -30,8 +30,11 @@ jobs:
       - name: Update price history
         run: python update_data.py --universe "All US listed" --chunk-size 50 --pause-seconds 2 --retries 2
 
+      - name: Update Sugar Babies watchlist
+        run: python update_sugar_babies.py --universe "All US listed" --period 6y --chunk-size 50 --pause-seconds 2 --retries 2
+
       - name: Commit updated data
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Update scanner data"
-          file_pattern: data/history_prices.parquet data/scanner_metrics.parquet data/metadata.json
+          file_pattern: data/history_prices.parquet data/scanner_metrics.parquet data/metadata.json data/sugar_babies.parquet data/sugar_babies_metadata.json

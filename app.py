@@ -26,6 +26,7 @@ from qull_scanner.filters import (
 )
 from qull_scanner.metrics import rolling_dollar_volume
 from qull_scanner.setup import add_base_setup_columns
+from qull_scanner.sugar_babies import SUGAR_BABIES_PERIODS
 from qull_scanner.trade_plan import add_trade_plan_columns
 
 
@@ -35,6 +36,8 @@ EXPORT_DIR = Path("exports")
 DATA_DIR = Path("data")
 HISTORY_FILE = DATA_DIR / "history_prices.parquet"
 METRICS_FILE = DATA_DIR / "scanner_metrics.parquet"
+SUGAR_BABIES_FILE = DATA_DIR / "sugar_babies.parquet"
+SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
 DEFAULT_BREAKOUT_LOOKBACK = 20
 APP_BUILD_MARKER = "2026-05-21-streamlit-deploy-base-history-ma-surfing-fix"
@@ -229,6 +232,61 @@ def save_metrics_to_parquet(metrics: pd.DataFrame, path: Path = METRICS_FILE) ->
 
     path.parent.mkdir(exist_ok=True)
     metrics.to_parquet(path, index=False)
+
+
+@st.cache_data(ttl=60 * 15, show_spinner=False)
+def load_precomputed_sugar_babies(path: str = str(SUGAR_BABIES_FILE)) -> pd.DataFrame:
+    sugar_babies = pd.read_parquet(path)
+    if "Updated At" in sugar_babies.columns:
+        sugar_babies["Updated At"] = pd.to_datetime(sugar_babies["Updated At"])
+    return sugar_babies
+
+
+def merge_sugar_babies_with_metrics(sugar_babies: pd.DataFrame, metrics: pd.DataFrame) -> pd.DataFrame:
+    if sugar_babies.empty or metrics.empty:
+        return sugar_babies.copy()
+
+    context_columns = [
+        "Ticker",
+        "Date",
+        "Price",
+        "Momentum Rank",
+        "Return 1M %",
+        "Return 3M %",
+        "Return 6M %",
+        "ADR 20D %",
+        "Daily Return %",
+        "Volume",
+        "Avg Volume 20D",
+        "Daily $ Volume 20D",
+        "ATR Extension SMA50",
+        "% Extension SMA50",
+        "Price > SMA10",
+        "Price > SMA20",
+        "Minervini Trend Template",
+    ]
+    available_context = [column for column in context_columns if column in metrics.columns]
+    if available_context == ["Ticker"]:
+        return sugar_babies.copy()
+
+    return sugar_babies.merge(metrics[available_context], on="Ticker", how="left")
+
+
+def sort_sugar_babies_view(sugar_babies: pd.DataFrame, sort_by: str) -> pd.DataFrame:
+    if sugar_babies.empty:
+        return sugar_babies
+
+    df = sugar_babies.copy()
+    sort_options = {
+        "Actionable SB": (["SB Hit Windows", "SB Best Rank", "SB 9/252", "SB 9/50", "SB 9/1450", "Ticker"], [False, True, False, False, False, True]),
+        "Replica TC2000 9/1450": (["SB 9/1450", "SB 9/1260", "SB 9/1008", "Ticker"], [False, False, False, True]),
+        "Recent SB 9/50": (["SB 9/50", "SB 9/20", "SB 9/10", "SB Best Rank", "Ticker"], [False, False, False, True, True]),
+    }
+    columns, ascending = sort_options.get(sort_by, sort_options["Actionable SB"])
+    available = [(column, asc) for column, asc in zip(columns, ascending) if column in df.columns]
+    if not available:
+        return df
+    return df.sort_values([column for column, _ in available], ascending=[asc for _, asc in available]).reset_index(drop=True)
 
 
 def safe_return(close: pd.Series, days: int) -> float:
@@ -460,6 +518,11 @@ def format_output(df: pd.DataFrame) -> pd.DataFrame:
         "Price",
         "Momentum Rank",
         "Universe Rank",
+        "SB Hit Windows",
+        "SB Best Rank",
+        "SB Score",
+        *[f"SB 9/{period}" for period in SUGAR_BABIES_PERIODS],
+        *[column for column in df.columns if column.startswith("SB Rank 9/")],
         *[column for column in df.columns if column.startswith("Top ")],
         "Strict Q Lineage",
         "Strict Qullamaggie Overlap",
@@ -1473,6 +1536,53 @@ def sidebar_controls(symbols: pd.DataFrame) -> tuple[list[str], ScanFilters, lis
     return selected_symbols, filters, selected_extension_zones, chunk_size, pause_seconds
 
 
+def render_sugar_babies_view(sugar_babies: pd.DataFrame, metrics: pd.DataFrame) -> None:
+    st.caption(
+        "Sugar Babies SB replica la Stockbee Sugar Babies List: conta quante volte ogni ticker ha fatto "
+        "close/prev_close >= 1.04 con volume > volume precedente e volume >= 8.9M. "
+        "La watchlist e la union dei top 25 per finestre 1450/1260/1008/756/504/252/126/50/20/10/5. "
+        "Nota: e diversa dallo Stockbee 4% Breakout, che mostra solo il trigger giornaliero corrente."
+    )
+
+    if sugar_babies.empty:
+        st.warning(
+            "File Sugar Babies non trovato o vuoto. Esegui: "
+            "python update_sugar_babies.py --universe 'All US listed' --period 6y"
+        )
+        return
+
+    enriched = merge_sugar_babies_with_metrics(sugar_babies, metrics)
+    cols = st.columns(4)
+    cols[0].metric("SB watchlist", f"{len(enriched):,}")
+    if "SB 9/1450" in enriched.columns:
+        cols[1].metric("Max 9/1450", f"{int(enriched['SB 9/1450'].max()):,}")
+    if "SB Hit Windows" in enriched.columns:
+        cols[2].metric("Max hit windows", f"{int(enriched['SB Hit Windows'].max()):,}")
+    if "Updated At" in enriched.columns and enriched["Updated At"].notna().any():
+        cols[3].metric("Aggiornato", str(pd.to_datetime(enriched["Updated At"]).max().date()))
+
+    sort_by = st.selectbox(
+        "Ordinamento SB",
+        ["Actionable SB", "Replica TC2000 9/1450", "Recent SB 9/50"],
+        index=0,
+        help="Actionable privilegia presenza multi-finestra e rank migliore; TC2000 replica la colonna storica 9/1450.",
+    )
+    view_df = sort_sugar_babies_view(enriched, sort_by)
+    st.dataframe(
+        format_output(view_df),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Price": st.column_config.NumberColumn(format="$%.2f"),
+            "Momentum Rank": st.column_config.NumberColumn(format="%.1f"),
+            "ADR 20D %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Daily Return %": st.column_config.NumberColumn(format="%.1f%%"),
+            "ATR Extension SMA50": st.column_config.NumberColumn(format="%.2f"),
+        },
+    )
+    export_raw_section("Sugar Babies", view_df, "sugar_babies_sb.csv")
+
+
 def main() -> None:
     st.title("Qullamaggie NASDAQ Scanner")
     st.caption(f"Build: {APP_BUILD_MARKER}")
@@ -1511,6 +1621,7 @@ def main() -> None:
     )
 
     metrics = pd.DataFrame()
+    sugar_babies = pd.DataFrame()
     enriched_history: dict[str, pd.DataFrame] = {}
     history: dict[str, pd.DataFrame] = {}
 
@@ -1555,6 +1666,22 @@ def main() -> None:
         st.warning("Nessun dato valido ricevuto. Prova a ridurre i batch o premere Refresh dati.")
         return
 
+    if SUGAR_BABIES_FILE.exists():
+        try:
+            sugar_babies = load_precomputed_sugar_babies(str(SUGAR_BABIES_FILE))
+        except Exception as exc:
+            st.warning(f"Sugar Babies non caricato: {exc}")
+
+    if SUGAR_BABIES_METADATA_FILE.exists():
+        try:
+            sb_metadata = json.loads(SUGAR_BABIES_METADATA_FILE.read_text())
+            st.caption(
+                f"Sugar Babies aggiornato: {sb_metadata.get('updated_at', 'n/d')} - "
+                f"{sb_metadata.get('sugar_babies_rows', len(sugar_babies)):,} ticker in watchlist."
+            )
+        except json.JSONDecodeError:
+            pass
+
     base_history = enriched_history if enriched_history else history
     if not base_history and data_mode == "Precomputed" and HISTORY_FILE.exists():
         with st.spinner("Carico storico prezzi per base detector..."):
@@ -1585,13 +1712,14 @@ def main() -> None:
     extension_screen = apply_extension_zone_filter(add_extension_buckets(metrics, filters), selected_extension_zones)
     stockbee_screen = apply_stockbee_filter(metrics, filters)
 
-    kpis = st.columns(6)
+    kpis = st.columns(7)
     kpis[0].metric("Ticker con dati", f"{len(metrics):,}")
     kpis[1].metric("Q strict", f"{len(q_screen):,}")
     kpis[2].metric("Steve-style KQ", f"{len(steve_style_kq_screen):,}")
     kpis[3].metric("Q x Minervini", f"{len(guru_screen):,}")
     kpis[4].metric("Stockbee 4%", f"{len(stockbee_screen):,}")
-    kpis[5].metric("Ultima data", str(pd.to_datetime(metrics["Date"]).max().date()))
+    kpis[5].metric("Sugar Babies", f"{len(sugar_babies):,}")
+    kpis[6].metric("Ultima data", str(pd.to_datetime(metrics["Date"]).max().date()))
 
     view = st.radio(
         "Vista",
@@ -1604,6 +1732,7 @@ def main() -> None:
             "Minervini",
             "Extension Map",
             "Stockbee 4% Breakout",
+            "Sugar Babies SB",
             "Universo",
             "Chart",
         ],
@@ -1741,6 +1870,9 @@ def main() -> None:
         st.caption("Stockbee 4%: close / previous close >= 1.04, volume > volume ieri, volume >= soglia.")
         st.dataframe(format_output(stockbee_screen), use_container_width=True, hide_index=True)
         export_section("Stockbee", stockbee_screen, "stockbee_4pct_breakouts.csv")
+
+    elif view == "Sugar Babies SB":
+        render_sugar_babies_view(sugar_babies, metrics)
 
     elif view == "Universo":
         st.dataframe(format_output(metrics), use_container_width=True, hide_index=True)
