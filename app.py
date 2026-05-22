@@ -37,7 +37,7 @@ HISTORY_FILE = DATA_DIR / "history_prices.parquet"
 METRICS_FILE = DATA_DIR / "scanner_metrics.parquet"
 METADATA_FILE = DATA_DIR / "metadata.json"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-05-21-streamlit-deploy-core-base-detector-pdna-fix"
+APP_BUILD_MARKER = "2026-05-21-streamlit-deploy-base-history-ma-surfing-fix"
 RETURN_WINDOWS = {
     "1W": 5,
     "1M": 21,
@@ -1555,14 +1555,19 @@ def main() -> None:
         st.warning("Nessun dato valido ricevuto. Prova a ridurre i batch o premere Refresh dati.")
         return
 
+    base_history = enriched_history if enriched_history else history
+    if not base_history and data_mode == "Precomputed" and HISTORY_FILE.exists():
+        with st.spinner("Carico storico prezzi per base detector..."):
+            all_history = load_precomputed_history(str(HISTORY_FILE))
+            history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
+            base_history = history
+
+    q_candidates = apply_extension_zone_filter(
+        add_extension_buckets(apply_extension_filter(apply_qullamaggie_filter(metrics, filters), filters), filters),
+        selected_extension_zones,
+    )
     q_screen = add_trade_plan_columns(
-        add_base_setup_columns(
-            apply_extension_zone_filter(
-                add_extension_buckets(apply_extension_filter(apply_qullamaggie_filter(metrics, filters), filters), filters),
-                selected_extension_zones,
-            ),
-            enriched_history,
-        ),
+        add_base_setup_columns(q_candidates, base_history),
         setup_type="Strict Q Breakout",
     )
     steve_style_kq_screen = apply_extension_zone_filter(
