@@ -48,6 +48,25 @@ RETURN_WINDOWS = {
     "6M": 126,
     "9M": 189,
 }
+SCANNER_GROUPS = ["Qullamaggie", "Stockbee"]
+QULLAMAGGIE_VIEWS = [
+    "Steve Dashboard",
+    "Steve-style KQ",
+    "Qullamaggie Top 2%",
+    "Backtest Q",
+    "Guru Q x Minervini",
+    "Minervini",
+    "Extension Map",
+    "Universo",
+    "Chart",
+]
+STOCKBEE_VIEWS = ["Stockbee 4% Breakout", "Sugar Babies SB"]
+
+
+def view_options_for_scanner_group(scanner_group: str) -> list[str]:
+    if scanner_group == "Stockbee":
+        return STOCKBEE_VIEWS.copy()
+    return QULLAMAGGIE_VIEWS.copy()
 
 
 def export_section(name: str, df: pd.DataFrame, filename: str) -> None:
@@ -1721,21 +1740,15 @@ def main() -> None:
     kpis[5].metric("Sugar Babies", f"{len(sugar_babies):,}")
     kpis[6].metric("Ultima data", str(pd.to_datetime(metrics["Date"]).max().date()))
 
+    scanner_group = st.radio(
+        "Framework",
+        SCANNER_GROUPS,
+        horizontal=True,
+        help="Separa gli scanner Qullamaggie dagli scanner progressivi Stockbee.",
+    )
     view = st.radio(
-        "Vista",
-        [
-            "Steve Dashboard",
-            "Steve-style KQ",
-            "Qullamaggie Top 2%",
-            "Backtest Q",
-            "Guru Q x Minervini",
-            "Minervini",
-            "Extension Map",
-            "Stockbee 4% Breakout",
-            "Sugar Babies SB",
-            "Universo",
-            "Chart",
-        ],
+        "Scanner",
+        view_options_for_scanner_group(scanner_group),
         horizontal=True,
     )
 
