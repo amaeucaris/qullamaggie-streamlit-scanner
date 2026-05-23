@@ -1,0 +1,27 @@
+{
+  "updated_at": "2026-05-23T01:57:28.265487+00:00",
+  "universe": "All US listed",
+  "include_etfs": false,
+  "period": "6y",
+  "interval": "1d",
+  "requested_tickers": 7418,
+  "tickers_with_data": 6911,
+  "missing_tickers": 507,
+  "sugar_babies_file": "data/sugar_babies.parquet",
+  "sugar_babies_rows": 90,
+  "sugar_babies_periods": [
+    1450,
+    1260,
+    1008,
+    756,
+    504,
+    252,
+    126,
+    50,
+    20,
+    10,
+    5
+  ],
+  "sugar_babies_top_n": 25,
+  "formula": "CountTrue(c/c1>=1.04 and v>v1 and v>=8900000, N)"
+}
