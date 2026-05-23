@@ -94,35 +94,35 @@ def view_options_for_scanner_group(
 
 
 def scanner_framework_editor() -> dict[str, list[str]]:
-    """Main-page UI to change framework grouping without editing app.py."""
-    with st.expander("⚙️ Configura framework scanner", expanded=False):
-        st.caption("Configura qui quali scanner compaiono dentro ogni framework. Non e un segnale operativo.")
-        base_frameworks = list(DEFAULT_SCANNER_FRAMEWORKS)
-        custom_framework = st.text_input(
-            "Nuovo framework opzionale",
-            value="",
-            placeholder="es. Minervini",
-            help="Aggiunge un framework temporaneo nella sessione dell'app.",
-        ).strip()
-        framework_pool = base_frameworks.copy()
-        if custom_framework and custom_framework not in framework_pool:
-            framework_pool.append(custom_framework)
+    """Always-visible main-page UI to change framework grouping without editing app.py."""
+    st.markdown("### ⚙️ Configura framework scanner")
+    st.caption("Qui imposti quali scanner compaiono dentro ogni framework. Non e un segnale operativo.")
+    base_frameworks = list(DEFAULT_SCANNER_FRAMEWORKS)
+    custom_framework = st.text_input(
+        "Nuovo framework opzionale",
+        value="",
+        placeholder="es. Minervini",
+        help="Aggiunge un framework temporaneo nella sessione dell'app.",
+    ).strip()
+    framework_pool = base_frameworks.copy()
+    if custom_framework and custom_framework not in framework_pool:
+        framework_pool.append(custom_framework)
 
-        frameworks = st.multiselect(
-            "Framework visibili",
-            options=framework_pool,
-            default=framework_pool,
-            help="Usalo per mostrare/nascondere framework nella radio principale.",
+    frameworks = st.multiselect(
+        "Framework visibili",
+        options=framework_pool,
+        default=framework_pool,
+        help="Usalo per mostrare/nascondere framework nella radio principale.",
+    )
+    configured: dict[str, list[str]] = {}
+    for framework in frameworks:
+        configured[framework] = st.multiselect(
+            f"Scanner in {framework}",
+            options=ALL_SCANNER_VIEWS,
+            default=DEFAULT_SCANNER_FRAMEWORKS.get(framework, []),
+            key=f"scanner_views_{framework}",
         )
-        configured: dict[str, list[str]] = {}
-        for framework in frameworks:
-            configured[framework] = st.multiselect(
-                f"Scanner in {framework}",
-                options=ALL_SCANNER_VIEWS,
-                default=DEFAULT_SCANNER_FRAMEWORKS.get(framework, []),
-                key=f"scanner_views_{framework}",
-            )
-        return normalize_scanner_frameworks(configured) or DEFAULT_SCANNER_FRAMEWORKS.copy()
+    return normalize_scanner_frameworks(configured) or DEFAULT_SCANNER_FRAMEWORKS.copy()
 
 
 def export_section(name: str, df: pd.DataFrame, filename: str) -> None:
@@ -1661,6 +1661,7 @@ def render_sugar_babies_view(sugar_babies: pd.DataFrame, metrics: pd.DataFrame) 
 def main() -> None:
     st.title("Qullamaggie NASDAQ Scanner")
     st.caption(f"Build: {APP_BUILD_MARKER}")
+    scanner_frameworks = scanner_framework_editor()
 
     controls = st.columns([1, 1, 2, 3])
     with controls[0]:
@@ -1796,7 +1797,6 @@ def main() -> None:
     kpis[5].metric("Sugar Babies", f"{len(sugar_babies):,}")
     kpis[6].metric("Ultima data", str(pd.to_datetime(metrics["Date"]).max().date()))
 
-    scanner_frameworks = scanner_framework_editor()
     scanner_group = st.radio(
         "Framework",
         framework_options(scanner_frameworks),
