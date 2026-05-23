@@ -40,7 +40,7 @@ SUGAR_BABIES_FILE = DATA_DIR / "sugar_babies.parquet"
 SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-05-21-streamlit-deploy-base-history-ma-surfing-fix"
+APP_BUILD_MARKER = "2026-05-23-framework-config-visible-70c3dbb"
 RETURN_WINDOWS = {
     "1W": 5,
     "1M": 21,
