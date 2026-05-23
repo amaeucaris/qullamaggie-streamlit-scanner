@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pandas as pd
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 
 class _StreamlitStub(types.SimpleNamespace):
     def set_page_config(self, *args, **kwargs):
@@ -43,7 +47,7 @@ spec.loader.exec_module(app)
 
 
 def test_scanner_groups_separate_qullamaggie_and_stockbee_progression():
-    assert app.SCANNER_GROUPS == ["Qullamaggie", "Stockbee"]
+    assert app.framework_options() == ["Qullamaggie", "Stockbee"]
 
     qullamaggie_views = app.view_options_for_scanner_group("Qullamaggie")
     stockbee_views = app.view_options_for_scanner_group("Stockbee")
@@ -55,3 +59,25 @@ def test_scanner_groups_separate_qullamaggie_and_stockbee_progression():
     assert "Sugar Babies SB" not in qullamaggie_views
 
     assert stockbee_views == ["Stockbee 4% Breakout", "Sugar Babies SB"]
+
+
+def test_scanner_frameworks_can_be_overridden_from_app_state():
+    framework_map = {
+        "Qullamaggie": ["Steve Dashboard", "Chart"],
+        "Stockbee": ["Stockbee 4% Breakout"],
+        "Minervini": ["Minervini", "Guru Q x Minervini"],
+    }
+
+    assert app.framework_options(framework_map) == ["Qullamaggie", "Stockbee", "Minervini"]
+    assert app.view_options_for_scanner_group("Minervini", framework_map) == ["Minervini", "Guru Q x Minervini"]
+    assert app.view_options_for_scanner_group("Qullamaggie", framework_map) == ["Steve Dashboard", "Chart"]
+
+
+def test_scanner_framework_config_drops_empty_and_unknown_views():
+    dirty_map = {
+        "": ["Steve Dashboard"],
+        "Stockbee": ["Sugar Babies SB", "Not a real scanner"],
+        "Empty": [],
+    }
+
+    assert app.normalize_scanner_frameworks(dirty_map) == {"Stockbee": ["Sugar Babies SB"]}

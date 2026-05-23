@@ -48,7 +48,6 @@ RETURN_WINDOWS = {
     "6M": 126,
     "9M": 189,
 }
-SCANNER_GROUPS = ["Qullamaggie", "Stockbee"]
 QULLAMAGGIE_VIEWS = [
     "Steve Dashboard",
     "Steve-style KQ",
@@ -61,12 +60,70 @@ QULLAMAGGIE_VIEWS = [
     "Chart",
 ]
 STOCKBEE_VIEWS = ["Stockbee 4% Breakout", "Sugar Babies SB"]
+DEFAULT_SCANNER_FRAMEWORKS = {
+    "Qullamaggie": QULLAMAGGIE_VIEWS,
+    "Stockbee": STOCKBEE_VIEWS,
+}
+SCANNER_GROUPS = list(DEFAULT_SCANNER_FRAMEWORKS)
+ALL_SCANNER_VIEWS = list(dict.fromkeys(QULLAMAGGIE_VIEWS + STOCKBEE_VIEWS))
 
 
-def view_options_for_scanner_group(scanner_group: str) -> list[str]:
-    if scanner_group == "Stockbee":
-        return STOCKBEE_VIEWS.copy()
-    return QULLAMAGGIE_VIEWS.copy()
+def normalize_scanner_frameworks(frameworks: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Return a clean framework -> scanner map editable from Streamlit state."""
+    normalized: dict[str, list[str]] = {}
+    for framework, views in frameworks.items():
+        framework_name = str(framework).strip()
+        if not framework_name:
+            continue
+        valid_views = [view for view in views if view in ALL_SCANNER_VIEWS]
+        if valid_views:
+            normalized[framework_name] = list(dict.fromkeys(valid_views))
+    return normalized
+
+
+def framework_options(frameworks: dict[str, list[str]] | None = None) -> list[str]:
+    return list(normalize_scanner_frameworks(frameworks or DEFAULT_SCANNER_FRAMEWORKS))
+
+
+def view_options_for_scanner_group(
+    scanner_group: str,
+    frameworks: dict[str, list[str]] | None = None,
+) -> list[str]:
+    scanner_frameworks = normalize_scanner_frameworks(frameworks or DEFAULT_SCANNER_FRAMEWORKS)
+    return scanner_frameworks.get(scanner_group, QULLAMAGGIE_VIEWS).copy()
+
+
+def scanner_framework_editor() -> dict[str, list[str]]:
+    """Sidebar UI to change framework grouping without editing app.py."""
+    st.sidebar.divider()
+    with st.sidebar.expander("Framework scanner", expanded=False):
+        st.caption("Configura qui quali scanner compaiono dentro ogni framework. Non e un segnale operativo.")
+        base_frameworks = list(DEFAULT_SCANNER_FRAMEWORKS)
+        custom_framework = st.text_input(
+            "Nuovo framework opzionale",
+            value="",
+            placeholder="es. Minervini",
+            help="Aggiunge un framework temporaneo nella sessione dell'app.",
+        ).strip()
+        framework_pool = base_frameworks.copy()
+        if custom_framework and custom_framework not in framework_pool:
+            framework_pool.append(custom_framework)
+
+        frameworks = st.multiselect(
+            "Framework visibili",
+            options=framework_pool,
+            default=framework_pool,
+            help="Usalo per mostrare/nascondere framework nella radio principale.",
+        )
+        configured: dict[str, list[str]] = {}
+        for framework in frameworks:
+            configured[framework] = st.multiselect(
+                f"Scanner in {framework}",
+                options=ALL_SCANNER_VIEWS,
+                default=DEFAULT_SCANNER_FRAMEWORKS.get(framework, []),
+                key=f"scanner_views_{framework}",
+            )
+        return normalize_scanner_frameworks(configured) or DEFAULT_SCANNER_FRAMEWORKS.copy()
 
 
 def export_section(name: str, df: pd.DataFrame, filename: str) -> None:
@@ -1633,6 +1690,7 @@ def main() -> None:
 
     symbols = load_symbols(universe=universe, include_etfs=include_etfs)
     selected_symbols, filters, selected_extension_zones, chunk_size, pause_seconds = sidebar_controls(symbols)
+    scanner_frameworks = scanner_framework_editor()
 
     st.caption(
         f"Universo caricato: {len(symbols):,} strumenti ({universe}). "
@@ -1742,13 +1800,13 @@ def main() -> None:
 
     scanner_group = st.radio(
         "Framework",
-        SCANNER_GROUPS,
+        framework_options(scanner_frameworks),
         horizontal=True,
-        help="Separa gli scanner Qullamaggie dagli scanner progressivi Stockbee.",
+        help="Separa gli scanner per framework. Puoi cambiare la composizione dalla sidebar: Framework scanner.",
     )
     view = st.radio(
         "Scanner",
-        view_options_for_scanner_group(scanner_group),
+        view_options_for_scanner_group(scanner_group, scanner_frameworks),
         horizontal=True,
     )
 
