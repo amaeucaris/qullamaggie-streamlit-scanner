@@ -94,9 +94,8 @@ def view_options_for_scanner_group(
 
 
 def scanner_framework_editor() -> dict[str, list[str]]:
-    """Sidebar UI to change framework grouping without editing app.py."""
-    st.sidebar.divider()
-    with st.sidebar.expander("Framework scanner", expanded=False):
+    """Main-page UI to change framework grouping without editing app.py."""
+    with st.expander("⚙️ Configura framework scanner", expanded=False):
         st.caption("Configura qui quali scanner compaiono dentro ogni framework. Non e un segnale operativo.")
         base_frameworks = list(DEFAULT_SCANNER_FRAMEWORKS)
         custom_framework = st.text_input(
@@ -1690,7 +1689,6 @@ def main() -> None:
 
     symbols = load_symbols(universe=universe, include_etfs=include_etfs)
     selected_symbols, filters, selected_extension_zones, chunk_size, pause_seconds = sidebar_controls(symbols)
-    scanner_frameworks = scanner_framework_editor()
 
     st.caption(
         f"Universo caricato: {len(symbols):,} strumenti ({universe}). "
@@ -1798,6 +1796,7 @@ def main() -> None:
     kpis[5].metric("Sugar Babies", f"{len(sugar_babies):,}")
     kpis[6].metric("Ultima data", str(pd.to_datetime(metrics["Date"]).max().date()))
 
+    scanner_frameworks = scanner_framework_editor()
     scanner_group = st.radio(
         "Framework",
         framework_options(scanner_frameworks),
