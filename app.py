@@ -22,6 +22,7 @@ from qull_scanner.filters import (
     apply_minervini_filter as core_apply_minervini_filter,
     apply_qullamaggie_filter as core_apply_qullamaggie_filter,
     apply_steve_style_qullamaggie_filter as core_apply_steve_style_qullamaggie_filter,
+    apply_stockbee_9m_movers_filter as core_apply_stockbee_9m_movers_filter,
     apply_stockbee_filter as core_apply_stockbee_filter,
 )
 from qull_scanner.metrics import rolling_dollar_volume
@@ -40,7 +41,7 @@ SUGAR_BABIES_FILE = DATA_DIR / "sugar_babies.parquet"
 SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-05-23-framework-config-visible-70c3dbb"
+APP_BUILD_MARKER = "2026-05-23-stockbee-9-million-movers"
 RETURN_WINDOWS = {
     "1W": 5,
     "1M": 21,
@@ -521,6 +522,10 @@ def apply_steve_style_qullamaggie_filter(metrics: pd.DataFrame, filters: ScanFil
 
 def apply_stockbee_filter(metrics: pd.DataFrame, filters: ScanFilters) -> pd.DataFrame:
     return core_apply_stockbee_filter(metrics, scanner_thresholds(filters))
+
+
+def apply_stockbee_9m_movers_filter(metrics: pd.DataFrame, filters: ScanFilters) -> pd.DataFrame:
+    return core_apply_stockbee_9m_movers_filter(metrics, scanner_thresholds(filters))
 
 
 def apply_minervini_filter(metrics: pd.DataFrame) -> pd.DataFrame:
@@ -1040,6 +1045,7 @@ def render_steve_signals_board(
     steve_style_kq_screen: pd.DataFrame,
     minervini_screen: pd.DataFrame,
     stockbee_screen: pd.DataFrame,
+    filters: ScanFilters,
     sort_by: str,
     tile_style: str,
 ) -> None:
@@ -1050,16 +1056,15 @@ def render_steve_signals_board(
     kq = prepare_signal_df(steve_style_kq_screen, steve)
     mm = prepare_signal_df(minervini_screen, steve)
     sb4 = prepare_signal_df(stockbee_screen, steve)
+    sb9 = prepare_signal_df(apply_stockbee_9m_movers_filter(steve, filters), steve)
     base_liquid = steve[(steve["Price"] > 5) & (steve["Avg Volume 20D"] > 200_000)].copy()
 
-    sb9_cutoff = max(1, math.ceil(len(base_liquid) * 0.02))
-    sb9 = base_liquid[base_liquid["Return 9M %"].rank(method="min", ascending=False) <= sb9_cutoff].copy()
     sbw = base_liquid[base_liquid["Return 1W %"] >= 20].copy()
 
     columns = [
         signal_column_html("Qullamaggie", "KQ", kq, "Daily Return %", sort_by, tile_style, "header-yellow", 26),
         signal_column_html("Minervini", "MM", mm, "Daily Return %", sort_by, tile_style, "header-yellow", 26),
-        signal_column_html("9M Movers", "SB9", sb9, "Daily Return %", sort_by, tile_style, "header-green", 26),
+        signal_column_html("9 Million Movers", "SB9M", sb9, "Daily Return %", sort_by, tile_style, "header-green", 26),
         signal_column_html("20% Weekly", "SBW", sbw, "Return 1W %", sort_by, tile_style, "header-green", 26),
         signal_column_html("4% Daily", "SB4", sb4, "Daily Return %", sort_by, tile_style, "header-green", 32),
     ]
@@ -1203,6 +1208,7 @@ def render_steve_dashboard(
     minervini_screen: pd.DataFrame,
     guru_screen: pd.DataFrame,
     stockbee_screen: pd.DataFrame,
+    filters: ScanFilters,
 ) -> None:
     steve_all = add_steve_dashboard_fields(metrics)
     q_tickers = set(q_screen["Ticker"]) if not q_screen.empty else set()
@@ -1254,7 +1260,16 @@ def render_steve_dashboard(
             key="steve_tile_style",
         )
         gurus_steve = steve_all if strict_q_context else steve
-        render_steve_signals_board(gurus_steve, q_screen, steve_style_kq_screen, minervini_screen, stockbee_context, sort_by, tile_style)
+        render_steve_signals_board(
+            gurus_steve,
+            q_screen,
+            steve_style_kq_screen,
+            minervini_screen,
+            stockbee_context,
+            filters,
+            sort_by,
+            tile_style,
+        )
 
     liquid = steve[steve["Daily $ Volume 20D"] >= 500_000_000].copy()
     rts = steve[(steve["Daily $ Volume 20D"] >= 50_000_000) & (steve["ADR 20D %"] >= steve["ADR 20D %"].median())].copy()
@@ -1810,7 +1825,7 @@ def main() -> None:
     )
 
     if view == "Steve Dashboard":
-        render_steve_dashboard(metrics, q_screen, steve_style_kq_screen, minervini_screen, guru_screen, stockbee_screen)
+        render_steve_dashboard(metrics, q_screen, steve_style_kq_screen, minervini_screen, guru_screen, stockbee_screen, filters)
 
     elif view == "Steve-style KQ":
         st.caption(

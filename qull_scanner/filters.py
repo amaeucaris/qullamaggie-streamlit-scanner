@@ -137,6 +137,19 @@ def apply_stockbee_filter(metrics: pd.DataFrame, thresholds: ScannerThresholds) 
     ].copy()
 
 
+def apply_stockbee_9m_movers_filter(metrics: pd.DataFrame, thresholds: ScannerThresholds) -> pd.DataFrame:
+    """Stockbee 9M Movers: 4%+ daily mover with volume expansion and >= 9M shares traded."""
+    if metrics.empty:
+        return metrics
+
+    return metrics[
+        (metrics["Daily Return %"] >= thresholds.min_breakout_pct)
+        & (metrics["Volume"] > metrics["Prev Volume"])
+        & (metrics["Volume"] >= 8_900_000)
+        & (metrics["Price"] > thresholds.stockbee_min_price)
+    ].copy()
+
+
 def apply_minervini_filter(metrics: pd.DataFrame) -> pd.DataFrame:
     if metrics.empty:
         return metrics

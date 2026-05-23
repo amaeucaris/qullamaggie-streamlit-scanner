@@ -6,6 +6,7 @@ from qull_scanner.filters import (
     apply_minervini_filter,
     apply_qullamaggie_filter,
     apply_steve_style_qullamaggie_filter,
+    apply_stockbee_9m_movers_filter,
     apply_stockbee_filter,
 )
 
@@ -133,3 +134,18 @@ def test_stockbee_minervini_and_guru_filters_are_independent_helpers():
     assert set(apply_stockbee_filter(df, thresholds())["Ticker"]) == {"STRICT"}
     assert set(apply_minervini_filter(df)["Ticker"]) == {"STRICT", "ILLIQUID"}
     assert set(apply_guru_filter(apply_qullamaggie_filter(df, thresholds()), apply_minervini_filter(df))["Ticker"]) == {"STRICT"}
+
+
+def test_stockbee_9m_movers_means_nine_million_volume_not_nine_month_return():
+    df = pd.DataFrame(
+        [
+            {"Ticker": "NINE_MOVER", "Daily Return %": 5.0, "Volume": 9_100_000, "Prev Volume": 8_000_000, "Price": 12.0, "Return 9M %": -20.0},
+            {"Ticker": "LOW_VOLUME", "Daily Return %": 8.0, "Volume": 8_000_000, "Prev Volume": 7_000_000, "Price": 12.0, "Return 9M %": 500.0},
+            {"Ticker": "NO_VOLUME_EXPANSION", "Daily Return %": 6.0, "Volume": 10_000_000, "Prev Volume": 11_000_000, "Price": 12.0, "Return 9M %": 500.0},
+            {"Ticker": "LOW_DAILY_MOVE", "Daily Return %": 3.0, "Volume": 12_000_000, "Prev Volume": 10_000_000, "Price": 12.0, "Return 9M %": 500.0},
+        ]
+    )
+
+    result = apply_stockbee_9m_movers_filter(df, thresholds())
+
+    assert list(result["Ticker"]) == ["NINE_MOVER"]
