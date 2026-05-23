@@ -41,7 +41,7 @@ SUGAR_BABIES_FILE = DATA_DIR / "sugar_babies.parquet"
 SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-05-23-stockbee-9-million-movers"
+APP_BUILD_MARKER = "2026-05-23-steve-gurus-unfiltered-stockbee"
 RETURN_WINDOWS = {
     "1W": 5,
     "1M": 21,
@@ -1201,6 +1201,22 @@ def render_industry_rs_placeholder() -> None:
     )
 
 
+def steve_dashboard_context_frames(
+    steve_all: pd.DataFrame,
+    stockbee_screen: pd.DataFrame,
+    q_screen: pd.DataFrame,
+    strict_q_context: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return contextual Steve dashboard frames; Gurus columns stay unfiltered separately."""
+    if not strict_q_context:
+        return steve_all, stockbee_screen
+    q_tickers = set(q_screen["Ticker"]) if not q_screen.empty else set()
+    return (
+        steve_all[steve_all["Ticker"].isin(q_tickers)].copy(),
+        stockbee_screen[stockbee_screen["Ticker"].isin(q_tickers)].copy(),
+    )
+
+
 def render_steve_dashboard(
     metrics: pd.DataFrame,
     q_screen: pd.DataFrame,
@@ -1211,30 +1227,26 @@ def render_steve_dashboard(
     filters: ScanFilters,
 ) -> None:
     steve_all = add_steve_dashboard_fields(metrics)
-    q_tickers = set(q_screen["Ticker"]) if not q_screen.empty else set()
     strict_q_context = st.toggle(
-        "Steve Dashboard: solo Qullamaggie Top 2% 1M+3M+6M",
-        value=True,
+        "Steve Dashboard: contesto solo Qullamaggie Top 2%",
+        value=False,
         help=(
-            "ON = tutte le sezioni contestuali Steve mostrano solo i ticker che passano lo scanner "
-            "Qullamaggie puro: top 2% contemporaneamente su 1M, 3M e 6M, più filtri ADR/liquidità/medie. "
-            "OFF = dashboard di contesto sull'universo completo."
+            "ON = le sezioni contestuali Liquid Leaders / Stage / Heatmap / RTS / Quadrant mostrano solo i ticker "
+            "che passano lo scanner Qullamaggie puro. OFF = dashboard sull'universo completo. "
+            "La sezione Gurus resta sempre non filtrata, come nello screenshot di Steve: KQ, MM, SB9M, SBW e SB4 "
+            "devono essere liste indipendenti, non intersezioni con Qullamaggie."
         ),
     )
+    steve, stockbee_context = steve_dashboard_context_frames(steve_all, stockbee_screen, q_screen, strict_q_context)
     if strict_q_context:
-        steve = steve_all[steve_all["Ticker"].isin(q_tickers)].copy()
-        stockbee_context = stockbee_screen[stockbee_screen["Ticker"].isin(q_tickers)].copy()
         st.caption(
-            "Filtro Steve attivo: le sezioni Liquid Leaders / Stage / Heatmap / RTS / Quadrant mostrano "
-            "solo ticker già presenti nello scanner Qullamaggie Top 2% su 1M + 3M + 6M. "
-            "La colonna Gurus KQ resta Steve-style per confrontarla con lo screenshot di Steve."
+            "Filtro contesto Steve attivo: Liquid Leaders / Stage / Heatmap / RTS / Quadrant mostrano solo ticker "
+            "già presenti nello scanner Qullamaggie Top 2%. La sezione Gurus resta non filtrata."
         )
     else:
-        steve = steve_all
-        stockbee_context = stockbee_screen
         st.caption(
-            "Filtro Steve disattivato: queste sezioni sono dashboard di contesto sull'universo completo, "
-            "non lo scanner Qullamaggie puro."
+            "Filtro contesto Steve disattivato: dashboard sull'universo completo. La sezione Gurus mostra liste "
+            "indipendenti KQ / MM / SB9M / SBW / SB4."
         )
 
     steve_view = st.radio(
@@ -1259,13 +1271,12 @@ def render_steve_dashboard(
             horizontal=False,
             key="steve_tile_style",
         )
-        gurus_steve = steve_all if strict_q_context else steve
         render_steve_signals_board(
-            gurus_steve,
+            steve_all,
             q_screen,
             steve_style_kq_screen,
             minervini_screen,
-            stockbee_context,
+            stockbee_screen,
             filters,
             sort_by,
             tile_style,

@@ -73,6 +73,30 @@ def test_scanner_frameworks_can_be_overridden_from_app_state():
     assert app.view_options_for_scanner_group("Qullamaggie", framework_map) == ["Steve Dashboard", "Chart"]
 
 
+def test_steve_dashboard_context_can_filter_non_gurus_sections_without_mutating_sources():
+    steve_all = pd.DataFrame({"Ticker": ["Q", "SB_ONLY", "OTHER"], "Value": [1, 2, 3]})
+    stockbee = pd.DataFrame({"Ticker": ["Q", "SB_ONLY"], "Value": [10, 20]})
+    q_screen = pd.DataFrame({"Ticker": ["Q"]})
+
+    context_steve, context_stockbee = app.steve_dashboard_context_frames(
+        steve_all,
+        stockbee,
+        q_screen,
+        strict_q_context=True,
+    )
+    assert list(context_steve["Ticker"]) == ["Q"]
+    assert list(context_stockbee["Ticker"]) == ["Q"]
+
+    unfiltered_steve, unfiltered_stockbee = app.steve_dashboard_context_frames(
+        steve_all,
+        stockbee,
+        q_screen,
+        strict_q_context=False,
+    )
+    assert list(unfiltered_steve["Ticker"]) == ["Q", "SB_ONLY", "OTHER"]
+    assert list(unfiltered_stockbee["Ticker"]) == ["Q", "SB_ONLY"]
+
+
 def test_scanner_framework_config_drops_empty_and_unknown_views():
     dirty_map = {
         "": ["Steve Dashboard"],
