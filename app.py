@@ -26,14 +26,43 @@ from qull_scanner.filters import (
     apply_stockbee_filter as core_apply_stockbee_filter,
 )
 from qull_scanner.backtest_steve_algo import SteveBacktestConfig, simulate_steve_algo_trades, summarize_steve_algo_backtest
-from qull_scanner.metrics import (
-    daily_close_range,
-    darvas_levels,
-    gap_pct,
-    open_to_close_pct,
-    rolling_52w_position,
-    rolling_dollar_volume,
-)
+try:
+    from qull_scanner.metrics import (
+        daily_close_range,
+        darvas_levels,
+        gap_pct,
+        open_to_close_pct,
+        rolling_52w_position,
+        rolling_dollar_volume,
+    )
+except ImportError:
+    # Streamlit Cloud can occasionally boot with stale module files during a rebuild.
+    # Keep the app importable; tests still cover the canonical implementations in qull_scanner.metrics.
+    def rolling_dollar_volume(close: pd.Series, volume: pd.Series, length: int = 20) -> pd.Series:
+        return (close * volume).rolling(length).mean()
+
+    def daily_close_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
+        denominator = (high - low).replace(0, np.nan)
+        return ((close - low) / denominator * 100).replace([np.inf, -np.inf], np.nan)
+
+    def gap_pct(open_: float, prev_close: float) -> float:
+        if prev_close is None or not math.isfinite(float(prev_close)) or float(prev_close) == 0:
+            return math.nan
+        return round((float(open_) / float(prev_close) - 1) * 100, 10)
+
+    def open_to_close_pct(open_: float, close: float) -> float:
+        if open_ is None or not math.isfinite(float(open_)) or float(open_) == 0:
+            return math.nan
+        return round((float(close) / float(open_) - 1) * 100, 10)
+
+    def darvas_levels(high: pd.Series, low: pd.Series, length: int = 20) -> tuple[pd.Series, pd.Series]:
+        return high.shift(1).rolling(length, min_periods=length).max(), low.shift(1).rolling(length, min_periods=length).min()
+
+    def rolling_52w_position(close: pd.Series, length: int = 252) -> pd.Series:
+        prior_high = close.shift(1).rolling(length, min_periods=length).max()
+        prior_low = close.shift(1).rolling(length, min_periods=length).min()
+        denominator = (prior_high - prior_low).replace(0, np.nan)
+        return ((close - prior_low) / denominator * 100).replace([np.inf, -np.inf], np.nan)
 from qull_scanner.setup import add_base_setup_columns
 from qull_scanner.steve_algo import SteveAlgoThresholds, apply_steve_algo_watchlists
 from qull_scanner.sugar_babies import SUGAR_BABIES_PERIODS
@@ -50,7 +79,7 @@ SUGAR_BABIES_FILE = DATA_DIR / "sugar_babies.parquet"
 SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-05-23-steve-gurus-unfiltered-stockbee"
+APP_BUILD_MARKER = "2026-05-25-steve-algo-import-guard"
 RETURN_WINDOWS = {
     "1W": 5,
     "1M": 21,
