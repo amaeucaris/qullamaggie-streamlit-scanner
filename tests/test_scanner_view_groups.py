@@ -105,3 +105,25 @@ def test_scanner_framework_config_drops_empty_and_unknown_views():
     }
 
     assert app.normalize_scanner_frameworks(dirty_map) == {"Stockbee": ["Sugar Babies SB"]}
+
+
+def test_steve_algo_metric_column_guard_detects_stale_precomputed_metrics():
+    stale_metrics = pd.DataFrame({"Ticker": ["AAPL"], "Price": [100.0], "Momentum Rank": [95.0]})
+    fresh_metrics = stale_metrics.assign(
+        EMA10=99.0,
+        EMA20=98.0,
+        EMA50=97.0,
+        ATR20=2.0,
+        **{
+            "DCR %": 80.0,
+            "Darvas Upper": 101.0,
+            "Darvas Lower": 90.0,
+            "ATR Extension EMA10": 0.5,
+            "ATR Extension EMA20": 1.0,
+            "ATR Extension SMA50": 1.5,
+            "EMA10 Rising": True,
+        },
+    )
+
+    assert not app.has_steve_algo_metric_columns(stale_metrics)
+    assert app.has_steve_algo_metric_columns(fresh_metrics)

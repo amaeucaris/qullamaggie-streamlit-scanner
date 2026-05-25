@@ -79,7 +79,21 @@ SUGAR_BABIES_FILE = DATA_DIR / "sugar_babies.parquet"
 SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-05-25-steve-algo-import-guard"
+APP_BUILD_MARKER = "2026-05-25-steve-algo-precomputed-metrics-guard"
+STEVE_ALGO_METRIC_COLUMNS = {
+    "EMA10",
+    "EMA20",
+    "EMA50",
+    "ATR20",
+    "DCR %",
+    "Darvas Upper",
+    "Darvas Lower",
+    "ATR Extension EMA10",
+    "ATR Extension EMA20",
+    "ATR Extension SMA50",
+    "EMA10 Rising",
+    "Momentum Rank",
+}
 RETURN_WINDOWS = {
     "1W": 5,
     "1M": 21,
@@ -124,6 +138,10 @@ def normalize_scanner_frameworks(frameworks: dict[str, list[str]]) -> dict[str, 
 
 def framework_options(frameworks: dict[str, list[str]] | None = None) -> list[str]:
     return list(normalize_scanner_frameworks(frameworks or DEFAULT_SCANNER_FRAMEWORKS))
+
+
+def has_steve_algo_metric_columns(metrics: pd.DataFrame) -> bool:
+    return STEVE_ALGO_METRIC_COLUMNS.issubset(set(metrics.columns))
 
 
 def view_options_for_scanner_group(
@@ -2040,6 +2058,19 @@ def main() -> None:
         render_steve_dashboard(metrics, q_screen, steve_style_kq_screen, minervini_screen, guru_screen, stockbee_screen, filters)
 
     elif view == "Steve Algo Watchlist":
+        if not has_steve_algo_metric_columns(metrics):
+            st.info("Metriche SteveAlgo assenti nel parquet precomputato: ricalcolo da history_prices.parquet.")
+            if not history and HISTORY_FILE.exists():
+                with st.spinner("Carico storico prezzi per metriche SteveAlgo..."):
+                    all_history = load_precomputed_history(str(HISTORY_FILE))
+                    history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
+            with st.spinner("Ricalcolo metriche SteveAlgo..."):
+                recalculated_metrics, recalculated_history = calculate_metrics(history, filters.breakout_lookback)
+            if not recalculated_metrics.empty:
+                metrics = recalculated_metrics
+                if recalculated_history:
+                    enriched_history = recalculated_history
+                    base_history = enriched_history
         render_steve_algo_watchlist(metrics, filters)
 
     elif view == "Steve Algo Backtest":
