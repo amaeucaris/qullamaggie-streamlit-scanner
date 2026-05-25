@@ -54,6 +54,7 @@ def test_scanner_groups_separate_qullamaggie_and_stockbee_progression():
 
     assert "Qullamaggie Top 2%" in qullamaggie_views
     assert "Steve-style KQ" in qullamaggie_views
+    assert "Strategy Learning Lab" in qullamaggie_views
     assert "Backtest Q" in qullamaggie_views
     assert "Stockbee 4% Breakout" not in qullamaggie_views
     assert "Sugar Babies SB" not in qullamaggie_views

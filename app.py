@@ -105,6 +105,7 @@ QULLAMAGGIE_VIEWS = [
     "Steve Dashboard",
     "Steve Algo Watchlist",
     "Steve Algo Backtest",
+    "Strategy Learning Lab",
     "Steve-style KQ",
     "Qullamaggie Top 2%",
     "Backtest Q",
@@ -1824,6 +1825,71 @@ def build_steve_algo_backtest_events(
     return classified[classified["SteveAlgo Primary Bucket"].isin(["White Up", "Entry", "Yellow"])], enriched
 
 
+def render_strategy_learning_lab() -> None:
+    st.caption(
+        "Self-improvement controllato: propone ipotesi, non modifica soglie live e non autorizza capitale. "
+        "La produzione resta bloccata finché non passano OOS/random/forward paper + approvazione Antonio."
+    )
+    review_path = Path("exports/strategy_self_review.json")
+    md_path = Path("exports/strategy_self_review.md")
+    st.code("python3 scripts/run_strategy_self_review.py", language="bash")
+    if not review_path.exists():
+        st.warning("Nessun report self-review trovato. Esegui lo script sopra dopo aver generato backtest/events/trades.")
+        return
+    try:
+        review = json.loads(review_path.read_text())
+    except json.JSONDecodeError as exc:
+        st.error(f"Report self-review non leggibile: {exc}")
+        return
+
+    st.subheader("Verdict")
+    cols = st.columns(4)
+    cols[0].metric("Verdict", review.get("verdict", "N/D"))
+    cols[1].metric("Capital authorized", f"{review.get('capital_authorized_pct', 0)}%")
+    baseline = review.get("baseline_summary", {}) or {}
+    cols[2].metric("Closed trades", baseline.get("closed_trades", baseline.get("trades", "N/D")))
+    cols[3].metric("Expectancy R", baseline.get("expectancy_r", "N/D"))
+
+    warnings = review.get("warnings", []) or []
+    if warnings:
+        st.subheader("Warnings / Guardrail")
+        for warning in warnings:
+            st.write(f"- {warning}")
+
+    proposals = pd.DataFrame(review.get("proposals", []) or [])
+    st.subheader("Rule proposals")
+    if proposals.empty:
+        st.info("Nessuna proposta con evidenza sufficiente. NO_PRODUCTION_CHANGE.")
+    else:
+        show_cols = [c for c in ["promotion_status", "hypothesis", "reason", "sample_size", "capital_authorized_pct"] if c in proposals.columns]
+        st.dataframe(proposals[show_cols], use_container_width=True)
+
+    attribution = pd.DataFrame(review.get("attribution", []) or [])
+    st.subheader("Feature attribution — association only")
+    if attribution.empty:
+        st.info("Nessuna attribution disponibile.")
+    else:
+        show_cols = [
+            c
+            for c in [
+                "feature",
+                "sample_size",
+                "status",
+                "winner_median",
+                "loser_median",
+                "difference",
+                "expectancy",
+                "win_rate_pct",
+            ]
+            if c in attribution.columns
+        ]
+        st.dataframe(attribution[show_cols].head(100), use_container_width=True)
+
+    if md_path.exists():
+        with st.expander("Markdown report"):
+            st.markdown(md_path.read_text())
+
+
 def render_steve_algo_backtest(history: dict[str, pd.DataFrame], selected_symbols: list[str], filters: ScanFilters) -> None:
     st.caption(
         "Backtest event-based SteveAlgo v0: segnale a close, entrata next open, stop Darvas/EMA20-ATR, target R, max hold. "
@@ -2075,6 +2141,9 @@ def main() -> None:
 
     elif view == "Steve Algo Backtest":
         render_steve_algo_backtest(history, selected_symbols, filters)
+
+    elif view == "Strategy Learning Lab":
+        render_strategy_learning_lab()
 
     elif view == "Steve-style KQ":
         st.caption(
