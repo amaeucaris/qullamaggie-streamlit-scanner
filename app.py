@@ -25,8 +25,17 @@ from qull_scanner.filters import (
     apply_stockbee_9m_movers_filter as core_apply_stockbee_9m_movers_filter,
     apply_stockbee_filter as core_apply_stockbee_filter,
 )
-from qull_scanner.metrics import rolling_dollar_volume
+from qull_scanner.backtest_steve_algo import SteveBacktestConfig, simulate_steve_algo_trades, summarize_steve_algo_backtest
+from qull_scanner.metrics import (
+    daily_close_range,
+    darvas_levels,
+    gap_pct,
+    open_to_close_pct,
+    rolling_52w_position,
+    rolling_dollar_volume,
+)
 from qull_scanner.setup import add_base_setup_columns
+from qull_scanner.steve_algo import SteveAlgoThresholds, apply_steve_algo_watchlists
 from qull_scanner.sugar_babies import SUGAR_BABIES_PERIODS
 from qull_scanner.trade_plan import add_trade_plan_columns
 
@@ -51,6 +60,8 @@ RETURN_WINDOWS = {
 }
 QULLAMAGGIE_VIEWS = [
     "Steve Dashboard",
+    "Steve Algo Watchlist",
+    "Steve Algo Backtest",
     "Steve-style KQ",
     "Qullamaggie Top 2%",
     "Backtest Q",
@@ -409,18 +420,29 @@ def calculate_metrics(
         df["SMA50"] = sma(df["Close"], length=50)
         df["SMA150"] = sma(df["Close"], length=150)
         df["SMA200"] = sma(df["Close"], length=200)
+        df["EMA5"] = df["Close"].ewm(span=5, min_periods=5, adjust=False).mean()
+        df["EMA10"] = df["Close"].ewm(span=10, min_periods=10, adjust=False).mean()
+        df["EMA20"] = df["Close"].ewm(span=20, min_periods=20, adjust=False).mean()
+        df["EMA50"] = df["Close"].ewm(span=50, min_periods=50, adjust=False).mean()
         df["ATR14"] = atr(df["High"], df["Low"], df["Close"], length=14)
+        df["ATR20"] = atr(df["High"], df["Low"], df["Close"], length=20)
         df["AVG_VOL20"] = sma(df["Volume"], length=20)
         df["DOLLAR_VOL20"] = rolling_dollar_volume(df["Close"], df["Volume"], length=20)
         df["ADR_PCT"] = ((df["High"] / df["Low"]) - 1).replace([np.inf, -np.inf], np.nan) * 100
         df["ADR20_PCT"] = sma(df["ADR_PCT"], length=20)
         df["RET_1D_PCT"] = df["Close"].pct_change() * 100
+        df["DCR_PCT"] = daily_close_range(df["High"], df["Low"], df["Close"])
+        df["GAP_PCT"] = ((df["Open"] / df["Close"].shift(1)) - 1).replace([np.inf, -np.inf], np.nan) * 100
+        df["OPEN_CHANGE_PCT"] = ((df["Close"] / df["Open"]) - 1).replace([np.inf, -np.inf], np.nan) * 100
         df["HIGH_LOOKBACK"] = df["Close"].shift(1).rolling(breakout_lookback).max()
+        df["DARVAS_UPPER"], df["DARVAS_LOWER"] = darvas_levels(df["High"], df["Low"], length=20)
         df["VOL_RATIO20"] = df["Volume"] / df["AVG_VOL20"]
         # FIX #5: 52W High — shift(1) to avoid lookahead bias (consistent with HIGH_LOOKBACK)
         df["HIGH_52W"] = df["High"].shift(1).rolling(252, min_periods=200).max()
         df["LOW_52W"] = df["Low"].shift(1).rolling(252, min_periods=200).min()
         df["ATR_EXTENSION_SMA50"] = (df["Close"] - df["SMA50"]) / df["ATR14"]
+        df["ATR_EXTENSION_EMA10"] = (df["Close"] - df["EMA10"]) / df["ATR20"]
+        df["ATR_EXTENSION_EMA20"] = (df["Close"] - df["EMA20"]) / df["ATR20"]
         df["PCT_EXTENSION_SMA50"] = (df["Close"] / df["SMA50"] - 1) * 100
         enriched[ticker] = df
 
@@ -466,11 +488,28 @@ def calculate_metrics(
                 "SMA50": last["SMA50"],
                 "SMA150": last["SMA150"],
                 "SMA200": last["SMA200"],
+                "EMA5": last["EMA5"],
+                "EMA10": last["EMA10"],
+                "EMA20": last["EMA20"],
+                "EMA50": last["EMA50"],
+                "EMA10 Rising": bool(last["EMA10"] > df["EMA10"].iloc[-2]),
                 "ATR14": last["ATR14"],
+                "ATR20": last["ATR20"],
                 "ATR Extension SMA50": last["ATR_EXTENSION_SMA50"],
+                "ATR Extension EMA10": last["ATR_EXTENSION_EMA10"],
+                "ATR Extension EMA20": last["ATR_EXTENSION_EMA20"],
                 "% Extension SMA50": last["PCT_EXTENSION_SMA50"],
                 "52W High": last["HIGH_52W"],
                 "52W Low": last["LOW_52W"],
+                "52W Range %": ((last["Close"] - last["LOW_52W"]) / (last["HIGH_52W"] - last["LOW_52W"]) * 100)
+                if pd.notna(last["HIGH_52W"]) and pd.notna(last["LOW_52W"]) and last["HIGH_52W"] != last["LOW_52W"]
+                else np.nan,
+                "DCR %": last["DCR_PCT"],
+                "Gap %": last["GAP_PCT"],
+                "Open Change %": last["OPEN_CHANGE_PCT"],
+                "Darvas Upper": last["DARVAS_UPPER"],
+                "Darvas Lower": last["DARVAS_LOWER"],
+                "Market Cap": np.nan,
                 "Price > SMA10": bool(last["Close"] > last["SMA10"]),
                 "Price > SMA20": bool(last["Close"] > last["SMA20"]),
                 "Minervini Trend Template": minervini_trend_template,
@@ -1637,6 +1676,139 @@ def sidebar_controls(symbols: pd.DataFrame) -> tuple[list[str], ScanFilters, lis
     return selected_symbols, filters, selected_extension_zones, chunk_size, pause_seconds
 
 
+def steve_algo_thresholds_from_filters(filters: ScanFilters, enforce_market_cap: bool = False) -> SteveAlgoThresholds:
+    return SteveAlgoThresholds(
+        min_market_cap=1_000_000_000 if enforce_market_cap else 0,
+        min_dollar_volume=max(50_000_000, min(filters.min_dollar_volume, 150_000_000)),
+        min_price=filters.min_price,
+        min_rs=85,
+        min_trend_strength=80,
+        min_reward_risk=3,
+    )
+
+
+def render_steve_algo_watchlist(metrics: pd.DataFrame, filters: ScanFilters) -> pd.DataFrame:
+    st.caption(
+        "Replica trasparente v0 dello Swing Trading Algo Watchlist di SteveDJacobs: White Up / Entry / Yellow. "
+        "Formula proprietaria ignota: qui ogni riga espone ragione e metriche. Research only, capitale autorizzato 0%."
+    )
+    enforce_market_cap = st.toggle(
+        "Applica hard gate Market Cap >= $1B",
+        value=False,
+        help="OFF perché il parquet/precomputed corrente non contiene market cap affidabile. ON esclude righe con Market Cap N/D.",
+    )
+    watchlist = apply_steve_algo_watchlists(metrics, steve_algo_thresholds_from_filters(filters, enforce_market_cap))
+    if watchlist.empty:
+        st.warning("Nessun ticker SteveAlgo con i filtri correnti.")
+        return watchlist
+
+    counts = watchlist["SteveAlgo Primary Bucket"].value_counts()
+    cols = st.columns(4)
+    cols[0].metric("White Up", int(counts.get("White Up", 0)))
+    cols[1].metric("Entry", int(counts.get("Entry", 0)))
+    cols[2].metric("Yellow", int(counts.get("Yellow", 0)))
+    cols[3].metric("Capital authorized", "0%")
+
+    display_cols = [
+        "Ticker", "SteveAlgo Primary Bucket", "SteveAlgo Status", "Price", "Daily Return %", "DCR %",
+        "Gap %", "Open Change %", "Return 1M %", "Return 3M %", "Return 6M %", "Momentum Rank",
+        "SteveAlgo Trend Strength", "Reward-Risk", "ATR Extension EMA20", "ATR Extension SMA50",
+        "Daily $ Volume 20D", "Market Cap", "Capital Authorized", "SteveAlgo Reason",
+    ]
+    available = [c for c in display_cols if c in watchlist.columns]
+    for bucket in ["White Up", "Entry", "Yellow"]:
+        bucket_df = watchlist[watchlist["SteveAlgo Primary Bucket"] == bucket].copy()
+        st.subheader(f"{bucket} — {len(bucket_df)} stocks")
+        if bucket_df.empty:
+            st.info(f"Nessun {bucket}.")
+            continue
+        st.dataframe(bucket_df[available].round(2), use_container_width=True, hide_index=True)
+    export_raw_section("Steve Algo Watchlist", watchlist, "steve_algo_watchlist.csv")
+    return watchlist
+
+
+def build_steve_algo_backtest_events(
+    history: dict[str, pd.DataFrame],
+    filters: ScanFilters,
+    enforce_market_cap: bool = False,
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    rows: list[dict[str, object]] = []
+    enriched: dict[str, pd.DataFrame] = {}
+    for ticker, frame in history.items():
+        required = {"Open", "High", "Low", "Close", "Volume"}
+        if frame.empty or not required.issubset(frame.columns):
+            continue
+        df = frame[list(required)].copy().dropna(subset=["Close"])
+        if len(df) < 220:
+            continue
+        df["EMA10"] = df["Close"].ewm(span=10, min_periods=10, adjust=False).mean()
+        df["EMA20"] = df["Close"].ewm(span=20, min_periods=20, adjust=False).mean()
+        df["EMA50"] = df["Close"].ewm(span=50, min_periods=50, adjust=False).mean()
+        df["SMA50"] = sma(df["Close"], 50)
+        df["SMA200"] = sma(df["Close"], 200)
+        df["ATR20"] = atr(df["High"], df["Low"], df["Close"], 20)
+        df["DCR %"] = daily_close_range(df["High"], df["Low"], df["Close"])
+        df["Daily $ Volume 20D"] = rolling_dollar_volume(df["Close"], df["Volume"], 20)
+        df["Return 1M %"] = df["Close"].pct_change(21) * 100
+        df["Return 3M %"] = df["Close"].pct_change(63) * 100
+        df["Return 6M %"] = df["Close"].pct_change(126) * 100
+        df["Darvas Upper"], df["Darvas Lower"] = darvas_levels(df["High"], df["Low"], 20)
+        df["ATR Extension EMA10"] = (df["Close"] - df["EMA10"]) / df["ATR20"]
+        df["ATR Extension EMA20"] = (df["Close"] - df["EMA20"]) / df["ATR20"]
+        df["ATR Extension SMA50"] = (df["Close"] - df["SMA50"]) / df["ATR20"]
+        df["EMA10 Rising"] = df["EMA10"] > df["EMA10"].shift(1)
+        df["Breakout Above Lookback High"] = df["Close"] > df["Close"].shift(1).rolling(filters.breakout_lookback).max()
+        df["Price"] = df["Close"]
+        df["Daily Return %"] = df["Close"].pct_change() * 100
+        enriched[ticker] = df
+        tmp = df.reset_index(names="Date")
+        tmp["Ticker"] = ticker
+        rows.extend(tmp.to_dict("records"))
+    panel = pd.DataFrame(rows)
+    if panel.empty:
+        return pd.DataFrame(), enriched
+    panel = panel.dropna(subset=["Return 1M %", "Return 3M %", "Return 6M %", "EMA10", "EMA20", "EMA50", "SMA50", "SMA200", "ATR20"])
+    for col in ["Return 1M %", "Return 3M %", "Return 6M %"]:
+        panel[f"{col} Rank"] = panel.groupby("Date")[col].rank(pct=True, ascending=True) * 100
+    panel["Momentum Rank"] = panel[["Return 1M % Rank", "Return 3M % Rank", "Return 6M % Rank"]].mean(axis=1)
+    panel["Market Cap"] = np.nan if "Market Cap" not in panel.columns else panel["Market Cap"]
+    panel["Reward-Risk"] = np.nan
+    classified = apply_steve_algo_watchlists(panel, steve_algo_thresholds_from_filters(filters, enforce_market_cap))
+    return classified[classified["SteveAlgo Primary Bucket"].isin(["White Up", "Entry", "Yellow"])], enriched
+
+
+def render_steve_algo_backtest(history: dict[str, pd.DataFrame], selected_symbols: list[str], filters: ScanFilters) -> None:
+    st.caption(
+        "Backtest event-based SteveAlgo v0: segnale a close, entrata next open, stop Darvas/EMA20-ATR, target R, max hold. "
+        "No same-bar execution. Research only; capitale autorizzato 0%."
+    )
+    cols = st.columns(4)
+    max_hold = cols[0].number_input("Max hold bars", min_value=2, max_value=80, value=20, step=1)
+    target_r = cols[1].number_input("Target R", min_value=1.0, max_value=10.0, value=3.0, step=0.5)
+    slippage_bps = cols[2].number_input("Slippage bps", min_value=0.0, max_value=100.0, value=10.0, step=5.0)
+    enforce_market_cap = cols[3].toggle("Gate $1B", value=False)
+    if st.button("Esegui backtest SteveAlgo", use_container_width=True):
+        if not history and HISTORY_FILE.exists():
+            with st.spinner("Carico storico prezzi precomputato..."):
+                all_history = load_precomputed_history(str(HISTORY_FILE))
+                history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
+        with st.spinner("Genero eventi e simulo trade SteveAlgo..."):
+            events, enriched = build_steve_algo_backtest_events(history, filters, enforce_market_cap)
+            trades = simulate_steve_algo_trades(
+                events,
+                enriched,
+                SteveBacktestConfig(max_hold_bars=int(max_hold), target_r=float(target_r), slippage_bps=float(slippage_bps)),
+            )
+            summary = summarize_steve_algo_backtest(trades)
+        if trades.empty:
+            st.warning("Nessun trade generato con i parametri correnti.")
+            return
+        st.json(summary)
+        st.line_chart(trades["R"].cumsum())
+        st.dataframe(trades.round(3), use_container_width=True, hide_index=True)
+        export_raw_section("SteveAlgo Backtest Trades", trades, "steve_algo_backtest_trades.csv")
+
+
 def render_sugar_babies_view(sugar_babies: pd.DataFrame, metrics: pd.DataFrame) -> None:
     st.caption(
         "Sugar Babies SB replica la Stockbee Sugar Babies List: conta quante volte ogni ticker ha fatto "
@@ -1837,6 +2009,12 @@ def main() -> None:
 
     if view == "Steve Dashboard":
         render_steve_dashboard(metrics, q_screen, steve_style_kq_screen, minervini_screen, guru_screen, stockbee_screen, filters)
+
+    elif view == "Steve Algo Watchlist":
+        render_steve_algo_watchlist(metrics, filters)
+
+    elif view == "Steve Algo Backtest":
+        render_steve_algo_backtest(history, selected_symbols, filters)
 
     elif view == "Steve-style KQ":
         st.caption(
