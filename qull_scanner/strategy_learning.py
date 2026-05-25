@@ -4,11 +4,12 @@ import hashlib
 import json
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
-from pandas.api.types import is_bool_dtype, is_categorical_dtype, is_object_dtype, is_string_dtype
+from pandas.api.types import is_bool_dtype, is_object_dtype, is_string_dtype
 
 
 EVENT_ID_LENGTH = 16
@@ -50,6 +51,148 @@ def stable_event_id(row: Mapping[str, Any], config: Mapping[str, Any] | None = N
     }
     raw = json.dumps(payload, sort_keys=True, default=_json_default, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:EVENT_ID_LENGTH]
+
+
+def _initial_stop_from_signal(signal_row: Mapping[str, Any], entry_bar: pd.Series, entry_price: float) -> float:
+    darvas = signal_row.get("Darvas Lower", entry_bar.get("Darvas Lower", math.nan))
+    ema20 = entry_bar.get("EMA20", math.nan)
+    atr20 = entry_bar.get("ATR20", math.nan)
+    candidates: list[float] = []
+    for value in [darvas, (float(ema20) - float(atr20)) if pd.notna(ema20) and pd.notna(atr20) else math.nan]:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value < entry_price:
+            candidates.append(value)
+    return max(candidates) if candidates else entry_price * 0.92
+
+
+def append_signal_journal(
+    signals: pd.DataFrame,
+    journal_path: str | Path,
+    config: Mapping[str, Any] | None = None,
+) -> pd.DataFrame:
+    """Append paper-tracked signal events idempotently.
+
+    This is the forward-learning journal: every candidate becomes an immutable
+    research event with capital authorization locked at 0%.
+    """
+    journal_path = Path(journal_path)
+    config = dict(config or {"strategy": "SteveAlgo", "rule_version": "self_learning_v1"})
+    if signals.empty:
+        existing = pd.read_csv(journal_path) if journal_path.exists() else pd.DataFrame()
+        return existing
+    required = {"Date", "Ticker"}
+    missing = required - set(signals.columns)
+    if missing:
+        raise ValueError(f"signals missing required columns: {sorted(missing)}")
+    incoming = signals.copy()
+    incoming["Date"] = pd.to_datetime(incoming["Date"]).dt.date.astype(str)
+    incoming["Ticker"] = incoming["Ticker"].astype(str).str.upper().str.strip()
+    incoming["Strategy"] = incoming.get("Strategy", "SteveAlgo")
+    incoming["event_id"] = [stable_event_id(row, config) for row in incoming.to_dict("records")]
+    incoming["Rule Config JSON"] = json.dumps(config, sort_keys=True, default=_json_default)
+    incoming["Paper Status"] = incoming.get("Paper Status", "OPEN")
+    incoming["Capital Authorized"] = "0%"
+    incoming["Created At UTC"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    existing = pd.read_csv(journal_path) if journal_path.exists() else pd.DataFrame()
+    combined = pd.concat([existing, incoming], ignore_index=True, sort=False) if not existing.empty else incoming
+    combined = combined.drop_duplicates("event_id", keep="first").sort_values(["Date", "Ticker"]).reset_index(drop=True)
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(journal_path, index=False)
+    return combined
+
+
+def resolve_paper_outcomes(
+    journal: pd.DataFrame,
+    history_by_ticker: Mapping[str, pd.DataFrame],
+    max_hold_bars: int = 20,
+    target_r: float | None = 3.0,
+    slippage_bps: float = 0.0,
+) -> pd.DataFrame:
+    """Resolve mature paper events into R outcomes while leaving immature events open."""
+    rows: list[dict[str, Any]] = []
+    if journal.empty:
+        return pd.DataFrame(columns=["event_id", "Paper Status", "R"])
+    for event in journal.to_dict("records"):
+        event_id = event.get("event_id")
+        ticker = str(event.get("Ticker", "")).upper()
+        signal_date = pd.Timestamp(event.get("Date"))
+        hist = history_by_ticker.get(ticker)
+        base = {"event_id": event_id, "Ticker": ticker, "Signal Date": signal_date.date().isoformat(), "Paper Status": "OPEN", "R": np.nan}
+        if hist is None or hist.empty:
+            base["Outcome Note"] = "missing history"
+            rows.append(base)
+            continue
+        h = hist.copy().sort_index()
+        if "Date" in h.columns:
+            h = h.set_index(pd.to_datetime(h["Date"]))
+        else:
+            h.index = pd.to_datetime(h.index)
+        future_positions = h.index[h.index > signal_date]
+        if len(future_positions) < max_hold_bars:
+            base["Outcome Note"] = f"immature: {len(future_positions)}/{max_hold_bars} future bars"
+            rows.append(base)
+            continue
+        entry_date = future_positions[0]
+        entry_loc = h.index.get_loc(entry_date)
+        entry_bar = h.iloc[entry_loc]
+        entry = float(entry_bar["Open"]) * (1 + slippage_bps / 10_000)
+        stop = _initial_stop_from_signal(event, entry_bar, entry)
+        risk = entry - stop
+        if risk <= 0 or not math.isfinite(risk):
+            base["Paper Status"] = "SKIPPED"
+            base["Outcome Note"] = "invalid risk"
+            rows.append(base)
+            continue
+        target = entry + risk * target_r if target_r else math.inf
+        exit_date = entry_date
+        exit_raw = h.iloc[min(entry_loc + max_hold_bars - 1, len(h) - 1)]["Close"]
+        exit_reason = "timeout"
+        bars_held = 0
+        mfe_r = -math.inf
+        mae_r = math.inf
+        for bar_offset in range(max_hold_bars):
+            loc = entry_loc + bar_offset
+            bar = h.iloc[loc]
+            exit_date = h.index[loc]
+            bars_held = bar_offset + 1
+            mfe_r = max(mfe_r, (float(bar["High"]) - entry) / risk)
+            mae_r = min(mae_r, (float(bar["Low"]) - entry) / risk)
+            if float(bar["Low"]) <= stop:
+                exit_reason = "stop"
+                exit_raw = stop
+                break
+            if float(bar["High"]) >= target:
+                exit_reason = "target"
+                exit_raw = target
+                break
+            if pd.notna(bar.get("EMA20", math.nan)) and float(bar["Close"]) < float(bar["EMA20"]):
+                exit_reason = "ema20_close"
+                exit_raw = bar["Close"]
+                break
+            exit_raw = bar["Close"]
+        exit_px = float(exit_raw) * (1 - slippage_bps / 10_000)
+        rows.append(
+            {
+                **base,
+                "Paper Status": "CLOSED",
+                "Entry Date": pd.Timestamp(entry_date).date().isoformat(),
+                "Exit Date": pd.Timestamp(exit_date).date().isoformat(),
+                "Entry Price": round(entry, 4),
+                "Stop": round(stop, 4),
+                "Exit Price": round(exit_px, 4),
+                "Exit Reason": exit_reason,
+                "Bars Held": bars_held,
+                "R": round((exit_px - entry) / risk, 4),
+                "MFE R": round(float(mfe_r), 4),
+                "MAE R": round(float(mae_r), 4),
+                "Outcome Note": "resolved from price history",
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def merge_events_with_outcomes(events: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataFrame:
@@ -144,6 +287,8 @@ def feature_attribution(events_with_outcomes: pd.DataFrame, min_sample: int = 30
         if col in excluded or is_bool_dtype(df[col]):
             continue
         numeric = pd.to_numeric(df[col], errors="coerce")
+        if is_bool_dtype(numeric):
+            continue
         if numeric.notna().sum() >= 2:
             winners = numeric[df["_R"] > 0].dropna()
             losers = numeric[df["_R"] <= 0].dropna()
@@ -164,7 +309,7 @@ def feature_attribution(events_with_outcomes: pd.DataFrame, min_sample: int = 30
                     "association_only": True,
                 }
             )
-        elif is_object_dtype(df[col]) or is_string_dtype(df[col]) or is_categorical_dtype(df[col]):
+        elif is_object_dtype(df[col]) or is_string_dtype(df[col]) or isinstance(df[col].dtype, pd.CategoricalDtype):
             for value, group in df.groupby(col, dropna=True):
                 if len(group) < 1:
                     continue

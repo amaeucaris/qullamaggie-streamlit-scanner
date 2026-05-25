@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from scripts.run_strategy_self_review import build_self_review, write_self_review
+from scripts.run_strategy_self_review import _ensure_event_ids, build_self_review, write_self_review
 
 
 def test_build_self_review_emits_no_production_change_and_watch_proposals(tmp_path: Path):
@@ -34,6 +34,33 @@ def test_build_self_review_emits_no_production_change_and_watch_proposals(tmp_pa
     assert review["baseline_summary"]["closed_trades"] == 6
     assert review["attribution_rows"] >= 1
     assert review["proposal_rows"] >= 1
+
+
+def test_ensure_event_ids_fills_missing_ids_without_overwriting_existing_ones():
+    events = pd.DataFrame(
+        {
+            "event_id": [pd.NA, "kept"],
+            "Date": ["2026-01-02", "2026-01-03"],
+            "Ticker": ["AAA", "BBB"],
+            "SteveAlgo Primary Bucket": ["Entry", "White Up"],
+        }
+    )
+    trades = pd.DataFrame(
+        {
+            "event_id": [pd.NA, "trade-kept"],
+            "Signal Date": ["2026-01-02", "2026-01-03"],
+            "Ticker": ["AAA", "BBB"],
+            "Bucket": ["Entry", "White Up"],
+            "R": [1.0, -1.0],
+        }
+    )
+
+    filled_events, filled_trades = _ensure_event_ids(events, trades)
+
+    assert filled_events["event_id"].isna().sum() == 0
+    assert filled_trades["event_id"].isna().sum() == 0
+    assert "kept" in set(filled_events["event_id"])
+    assert "trade-kept" in set(filled_trades["event_id"])
 
 
 def test_write_self_review_creates_json_and_markdown(tmp_path: Path):

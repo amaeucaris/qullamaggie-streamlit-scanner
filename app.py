@@ -1832,9 +1832,9 @@ def render_strategy_learning_lab() -> None:
     )
     review_path = Path("exports/strategy_self_review.json")
     md_path = Path("exports/strategy_self_review.md")
-    st.code("python3 scripts/run_strategy_self_review.py", language="bash")
+    st.code("python3 scripts/run_strategy_learning_loop.py", language="bash")
     if not review_path.exists():
-        st.warning("Nessun report self-review trovato. Esegui lo script sopra dopo aver generato backtest/events/trades.")
+        st.warning("Nessun report self-review trovato. Esegui il learning loop sopra dopo aver generato almeno una watchlist.")
         return
     try:
         review = json.loads(review_path.read_text())
@@ -1849,6 +1849,15 @@ def render_strategy_learning_lab() -> None:
     baseline = review.get("baseline_summary", {}) or {}
     cols[2].metric("Closed trades", baseline.get("closed_trades", baseline.get("trades", "N/D")))
     cols[3].metric("Expectancy R", baseline.get("expectancy_r", "N/D"))
+
+    loop = review.get("learning_loop", {}) or {}
+    if loop:
+        st.subheader("Forward paper loop")
+        lcols = st.columns(4)
+        lcols[0].metric("Closed forward", loop.get("closed_outcomes", "N/D"))
+        lcols[1].metric("Open forward", loop.get("open_outcomes", "N/D"))
+        lcols[2].metric("Historical trades", loop.get("historical_trade_rows", "N/D"))
+        lcols[3].metric("Latest watchlist", Path(loop.get("watchlist_path", "N/D")).name if loop.get("watchlist_path") else "N/D")
 
     warnings = review.get("warnings", []) or []
     if warnings:

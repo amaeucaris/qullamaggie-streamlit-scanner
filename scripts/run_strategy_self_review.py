@@ -58,21 +58,29 @@ def _ensure_event_ids(events: pd.DataFrame, trades: pd.DataFrame, config: dict[s
     config = config or {"strategy": "SteveAlgo", "rule_version": "self_review_v1"}
     e = events.copy()
     t = trades.copy()
-    if not e.empty and "event_id" not in e.columns:
+    if not e.empty:
+        if "event_id" not in e.columns:
+            e["event_id"] = pd.NA
         e["strategy"] = e.get("strategy", "SteveAlgo")
-        e["event_id"] = [stable_event_id(row, config) for row in e.to_dict("records")]
-    if not t.empty and "event_id" not in t.columns:
-        synth_events = []
-        for row in t.to_dict("records"):
-            synth_events.append(
-                {
-                    "strategy": row.get("Strategy", "SteveAlgo"),
-                    "Ticker": row.get("Ticker"),
-                    "Date": row.get("Signal Date", row.get("Date")),
-                    "SteveAlgo Primary Bucket": row.get("Bucket", row.get("SteveAlgo Primary Bucket", "N/D")),
-                }
-            )
-        t["event_id"] = [stable_event_id(row, config) for row in synth_events]
+        missing_event_ids = e["event_id"].isna() | (e["event_id"].astype(str).str.strip() == "")
+        if missing_event_ids.any():
+            e.loc[missing_event_ids, "event_id"] = [stable_event_id(row, config) for row in e.loc[missing_event_ids].to_dict("records")]
+    if not t.empty:
+        if "event_id" not in t.columns:
+            t["event_id"] = pd.NA
+        missing_trade_ids = t["event_id"].isna() | (t["event_id"].astype(str).str.strip() == "")
+        if missing_trade_ids.any():
+            synth_events = []
+            for row in t.loc[missing_trade_ids].to_dict("records"):
+                synth_events.append(
+                    {
+                        "strategy": row.get("Strategy", "SteveAlgo"),
+                        "Ticker": row.get("Ticker"),
+                        "Date": row.get("Signal Date", row.get("Date")),
+                        "SteveAlgo Primary Bucket": row.get("Bucket", row.get("SteveAlgo Primary Bucket", "N/D")),
+                    }
+                )
+            t.loc[missing_trade_ids, "event_id"] = [stable_event_id(row, config) for row in synth_events]
     return e, t
 
 
