@@ -79,7 +79,7 @@ SUGAR_BABIES_FILE = DATA_DIR / "sugar_babies.parquet"
 SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-05-25-steve-algo-precomputed-metrics-guard"
+APP_BUILD_MARKER = "2026-05-26-action-first-dashboard-data-freshness"
 STEVE_ALGO_METRIC_COLUMNS = {
     "EMA10",
     "EMA20",
@@ -101,27 +101,22 @@ RETURN_WINDOWS = {
     "6M": 126,
     "9M": 189,
 }
-QULLAMAGGIE_VIEWS = [
-    "Steve Dashboard",
-    "Steve Algo Watchlist",
-    "Steve Algo Backtest",
-    "Strategy Learning Lab",
-    "Steve-style KQ",
-    "Qullamaggie Top 2%",
-    "Backtest Q",
-    "Guru Q x Minervini",
-    "Minervini",
-    "Extension Map",
-    "Universo",
-    "Chart",
-]
-STOCKBEE_VIEWS = ["Stockbee 4% Breakout", "Sugar Babies SB"]
+DASHBOARD_VIEWS = ["Daily Dashboard", "Strategy Learning Lab"]
+QULLAMAGGIE_VIEWS = ["Qullamaggie Top 2%", "Backtest Q"]
+STEVE_ALGO_VIEWS = ["Steve Dashboard", "Steve Algo Watchlist", "Steve Algo Backtest", "Steve-style KQ"]
+STOCKBEE_VIEWS = ["Stockbee 4% Breakout", "Sugar Babies SB", "Stockbee + Sugar Baby Overlap"]
+QUALITY_FILTER_VIEWS = ["Guru Q x Minervini", "Minervini", "Extension Map", "Universo", "Chart"]
 DEFAULT_SCANNER_FRAMEWORKS = {
+    "Dashboard": DASHBOARD_VIEWS,
     "Qullamaggie": QULLAMAGGIE_VIEWS,
+    "SteveAlgo": STEVE_ALGO_VIEWS,
     "Stockbee": STOCKBEE_VIEWS,
+    "Quality Filters": QUALITY_FILTER_VIEWS,
 }
 SCANNER_GROUPS = list(DEFAULT_SCANNER_FRAMEWORKS)
-ALL_SCANNER_VIEWS = list(dict.fromkeys(QULLAMAGGIE_VIEWS + STOCKBEE_VIEWS))
+ALL_SCANNER_VIEWS = list(
+    dict.fromkeys(DASHBOARD_VIEWS + QULLAMAGGIE_VIEWS + STEVE_ALGO_VIEWS + STOCKBEE_VIEWS + QUALITY_FILTER_VIEWS)
+)
 
 
 def normalize_scanner_frameworks(frameworks: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -153,36 +148,237 @@ def view_options_for_scanner_group(
     return scanner_frameworks.get(scanner_group, QULLAMAGGIE_VIEWS).copy()
 
 
-def scanner_framework_editor() -> dict[str, list[str]]:
-    """Always-visible main-page UI to change framework grouping without editing app.py."""
-    st.markdown("### ⚙️ Configura framework scanner")
-    st.caption("Qui imposti quali scanner compaiono dentro ogni framework. Non e un segnale operativo.")
-    base_frameworks = list(DEFAULT_SCANNER_FRAMEWORKS)
-    custom_framework = st.text_input(
-        "Nuovo framework opzionale",
-        value="",
-        placeholder="es. Minervini",
-        help="Aggiunge un framework temporaneo nella sessione dell'app.",
-    ).strip()
-    framework_pool = base_frameworks.copy()
-    if custom_framework and custom_framework not in framework_pool:
-        framework_pool.append(custom_framework)
+def scanner_framework_editor(expanded: bool = False) -> dict[str, list[str]]:
+    """Advanced UI to change framework grouping without editing app.py."""
+    with st.expander("⚙️ Configura framework scanner", expanded=expanded):
+        st.caption("Qui imposti quali scanner compaiono dentro ogni framework. Non e un segnale operativo.")
+        base_frameworks = list(DEFAULT_SCANNER_FRAMEWORKS)
+        custom_framework = st.text_input(
+            "Nuovo framework opzionale",
+            value="",
+            placeholder="es. Minervini",
+            help="Aggiunge un framework temporaneo nella sessione dell'app.",
+        ).strip()
+        framework_pool = base_frameworks.copy()
+        if custom_framework and custom_framework not in framework_pool:
+            framework_pool.append(custom_framework)
 
-    frameworks = st.multiselect(
-        "Framework visibili",
-        options=framework_pool,
-        default=framework_pool,
-        help="Usalo per mostrare/nascondere framework nella radio principale.",
-    )
-    configured: dict[str, list[str]] = {}
-    for framework in frameworks:
-        configured[framework] = st.multiselect(
-            f"Scanner in {framework}",
-            options=ALL_SCANNER_VIEWS,
-            default=DEFAULT_SCANNER_FRAMEWORKS.get(framework, []),
-            key=f"scanner_views_{framework}",
+        frameworks = st.multiselect(
+            "Framework visibili",
+            options=framework_pool,
+            default=framework_pool,
+            help="Usalo per mostrare/nascondere framework nella radio principale.",
         )
+        configured: dict[str, list[str]] = {}
+        for framework in frameworks:
+            configured[framework] = st.multiselect(
+                f"Scanner in {framework}",
+                options=ALL_SCANNER_VIEWS,
+                default=DEFAULT_SCANNER_FRAMEWORKS.get(framework, []),
+                key=f"scanner_views_{framework}",
+            )
     return normalize_scanner_frameworks(configured) or DEFAULT_SCANNER_FRAMEWORKS.copy()
+
+
+def _format_timestamp(value: object) -> str:
+    if value in (None, "", "n/d", "N/D"):
+        return "N/D"
+    try:
+        ts = pd.to_datetime(value, utc=True)
+    except Exception:
+        return str(value)
+    if pd.isna(ts):
+        return "N/D"
+    return ts.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _format_date(value: object) -> str:
+    if value in (None, "", "n/d", "N/D"):
+        return "N/D"
+    try:
+        ts = pd.to_datetime(value)
+    except Exception:
+        return str(value)
+    if pd.isna(ts):
+        return "N/D"
+    return str(ts.date())
+
+
+def compute_data_freshness_status(
+    updated_at: object,
+    last_market_date: object,
+    now: pd.Timestamp | None = None,
+    stale_after_days: int = 2,
+) -> dict[str, str | int | None]:
+    """Classify market-data freshness for the visible dashboard banner."""
+    now_ts = pd.Timestamp.utcnow() if now is None else pd.Timestamp(now)
+    if now_ts.tzinfo is None:
+        now_ts = now_ts.tz_localize("UTC")
+    else:
+        now_ts = now_ts.tz_convert("UTC")
+
+    last_market_ts = pd.to_datetime(last_market_date, errors="coerce")
+    if pd.isna(last_market_ts):
+        return {
+            "status": "STALE",
+            "last_market_date": "N/D",
+            "last_update": _format_timestamp(updated_at),
+            "age_days": None,
+            "message": "⚠️ DATA STALE — data mercato non disponibile; usare solo per analisi storica, non per watchlist operativa.",
+        }
+
+    last_market_day = last_market_ts.date()
+    age_days = (now_ts.date() - last_market_day).days
+    status = "STALE" if age_days > stale_after_days else "FRESH"
+    if status == "STALE":
+        message = "⚠️ DATA STALE — usare solo per analisi storica, non per watchlist operativa."
+    else:
+        message = "✅ DATA FRESH — utilizzabile per watchlist operativa, sempre research-only / capitale autorizzato 0%."
+    return {
+        "status": status,
+        "last_market_date": str(last_market_day),
+        "last_update": _format_timestamp(updated_at),
+        "age_days": age_days,
+        "message": message,
+    }
+
+
+def render_data_status_banner(status: dict[str, str | int | None]) -> None:
+    body = (
+        f"**Data status: {status['status']}**  \n"
+        f"Last market date: `{status['last_market_date']}`  \n"
+        f"Last update: `{status['last_update']}`  \n"
+        f"{status['message']}"
+    )
+    if status.get("status") == "FRESH":
+        st.success(body)
+    else:
+        st.error(body)
+
+
+def _ticker_set(df: pd.DataFrame) -> set[str]:
+    if df is None or df.empty or "Ticker" not in df.columns:
+        return set()
+    return set(df["Ticker"].dropna().astype(str))
+
+
+def build_daily_shortlist(
+    metrics: pd.DataFrame,
+    q_screen: pd.DataFrame,
+    steve_style_kq_screen: pd.DataFrame,
+    minervini_screen: pd.DataFrame,
+    stockbee_screen: pd.DataFrame,
+    sugar_babies: pd.DataFrame,
+    steve_algo_watchlist: pd.DataFrame | None = None,
+    limit: int = 10,
+) -> pd.DataFrame:
+    """Score cross-framework candidates into an action-first review list."""
+    if metrics.empty or "Ticker" not in metrics.columns:
+        return pd.DataFrame()
+
+    q = _ticker_set(q_screen)
+    kq = _ticker_set(steve_style_kq_screen)
+    minervini = _ticker_set(minervini_screen)
+    stockbee = _ticker_set(stockbee_screen)
+    sugar = _ticker_set(sugar_babies)
+    steve_algo_watchlist = steve_algo_watchlist if steve_algo_watchlist is not None else pd.DataFrame()
+    steve_bucket_by_ticker = {}
+    steve_reason_by_ticker = {}
+    if not steve_algo_watchlist.empty and "Ticker" in steve_algo_watchlist.columns:
+        for _, row in steve_algo_watchlist.iterrows():
+            ticker = str(row.get("Ticker", ""))
+            if not ticker:
+                continue
+            steve_bucket_by_ticker[ticker] = row.get("SteveAlgo Primary Bucket", "N/D")
+            steve_reason_by_ticker[ticker] = row.get("SteveAlgo Reason", "")
+
+    candidate_tickers = q | kq | minervini | stockbee | sugar | set(steve_bucket_by_ticker)
+    if not candidate_tickers:
+        return pd.DataFrame()
+    rows: list[dict[str, object]] = []
+    metric_context = metrics.drop_duplicates("Ticker").set_index("Ticker", drop=False)
+    for ticker in sorted(candidate_tickers):
+        score = 0
+        frameworks: list[str] = []
+        reasons: list[str] = []
+        bucket = steve_bucket_by_ticker.get(ticker)
+        if bucket == "Entry":
+            score += 3
+            frameworks.append("SteveAlgo Entry")
+        elif bucket == "White Up":
+            score += 2
+            frameworks.append("SteveAlgo White Up")
+        elif bucket == "Yellow":
+            score -= 3
+            frameworks.append("SteveAlgo Yellow")
+        if ticker in q:
+            score += 3
+            frameworks.append("Qullamaggie Strict")
+        if ticker in kq:
+            score += 2
+            frameworks.append("Steve-style KQ")
+        if ticker in stockbee:
+            score += 2
+            frameworks.append("Stockbee 4%")
+        if ticker in sugar:
+            score += 2
+            frameworks.append("Sugar Baby")
+        if ticker in minervini:
+            score += 2
+            frameworks.append("Minervini")
+
+        positive_frameworks = [fw for fw in frameworks if "Yellow" not in fw]
+        if len(positive_frameworks) >= 2:
+            score += 3
+            reasons.append(f"Overlap {len(positive_frameworks)} framework")
+
+        row_context = metric_context.loc[ticker].to_dict() if ticker in metric_context.index else {"Ticker": ticker}
+        rr = pd.to_numeric(row_context.get("Reward-Risk"), errors="coerce")
+        atr_ext = pd.to_numeric(row_context.get("ATR Extension SMA50"), errors="coerce")
+        if pd.notna(rr) and rr < 3:
+            score -= 3
+            readiness = "REJECT_RR"
+            next_action = "Skip"
+            reasons.append("R:R < 3")
+        elif pd.notna(atr_ext) and atr_ext >= 7:
+            score -= 2
+            readiness = "REJECT_EXTENDED"
+            next_action = "Skip"
+            reasons.append("troppo esteso")
+        elif bucket == "Entry" or (len(positive_frameworks) >= 3 and score >= 8):
+            readiness = "PAPER_CANDIDATE"
+            next_action = "Review chart"
+        elif score >= 4:
+            readiness = "CHART_REVIEW"
+            next_action = "Review chart"
+        else:
+            readiness = "MONITOR"
+            next_action = "Monitor"
+
+        if steve_reason_by_ticker.get(ticker):
+            reasons.append(str(steve_reason_by_ticker[ticker]))
+        if not reasons:
+            reasons.append("watchlist overlap / momentum context")
+
+        rows.append(
+            {
+                "Ticker": ticker,
+                "Priority Score": score,
+                "Frameworks confirmed": ", ".join(frameworks) if frameworks else "N/D",
+                "Trade Readiness": readiness,
+                "Next Action": next_action,
+                "Reason": "; ".join(reasons),
+                "Price": row_context.get("Price", np.nan),
+                "Daily Return %": row_context.get("Daily Return %", np.nan),
+                "Momentum Rank": row_context.get("Momentum Rank", np.nan),
+                "ADR 20D %": row_context.get("ADR 20D %", np.nan),
+                "ATR Extension SMA50": row_context.get("ATR Extension SMA50", np.nan),
+                "Reward-Risk": row_context.get("Reward-Risk", np.nan),
+                "Daily $ Volume 20D": row_context.get("Daily $ Volume 20D", np.nan),
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values(["Priority Score", "Ticker"], ascending=[False, True]).head(limit).reset_index(drop=True)
 
 
 def export_section(name: str, df: pd.DataFrame, filename: str) -> None:
@@ -1662,46 +1858,62 @@ def draw_chart(
 
 def sidebar_controls(symbols: pd.DataFrame) -> tuple[list[str], ScanFilters, list[str], int, float]:
     st.sidebar.header("Scanner")
+    preset = st.sidebar.radio(
+        "Preset",
+        ["Conservative", "Standard", "Aggressive", "Debug"],
+        index=1,
+        help="Conservative = meno rumore; Debug = test rapido su pochi ticker.",
+    )
+    preset_defaults = {
+        "Conservative": {"max_symbols": len(symbols), "min_dollar_volume_m": 150, "min_adr": 3.5, "top_percent": 2.0, "only_non_extended": True},
+        "Standard": {"max_symbols": len(symbols), "min_dollar_volume_m": 150, "min_adr": 3.5, "top_percent": 2.0, "only_non_extended": False},
+        "Aggressive": {"max_symbols": len(symbols), "min_dollar_volume_m": 50, "min_adr": 3.0, "top_percent": 3.0, "only_non_extended": False},
+        "Debug": {"max_symbols": min(250, len(symbols)), "min_dollar_volume_m": 50, "min_adr": 3.0, "top_percent": 5.0, "only_non_extended": False},
+    }[preset]
+
     max_symbols = st.sidebar.number_input(
         "Numero massimo ticker",
         min_value=50,
         max_value=max(50, len(symbols)),
-        value=len(symbols),
+        value=max(50, int(preset_defaults["max_symbols"])),
         step=50,
         help="Riduci questo valore per test rapidi. L'intero NASDAQ puo richiedere vari minuti.",
     )
     selected_symbols = symbols["yahoo_symbol"].head(int(max_symbols)).tolist()
 
-    min_price = st.sidebar.number_input("Prezzo minimo", min_value=0.0, value=5.0, step=0.5)
-    min_avg_volume = st.sidebar.number_input("Avg volume minimo", min_value=0, value=200_000, step=50_000)
-    top_percent = st.sidebar.slider("Top momentum %", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
-    only_non_extended = st.sidebar.toggle("Steve mode: solo non-extended", value=False)
-    min_extension_atr = st.sidebar.slider("Estensione minima ATR da SMA50", -5.0, 12.0, -5.0, 0.25)
-    moderate_extension_atr = st.sidebar.slider("Extended da ATR", 1.0, 8.0, 3.0, 0.25)
-    max_extension_atr = moderate_extension_atr
-    high_extension_atr = st.sidebar.slider("Very extended da ATR", 2.0, 12.0, 5.0, 0.25)
-    hyper_extension_atr = st.sidebar.slider("Hyper extended da ATR", 4.0, 15.0, 7.0, 0.25)
-    selected_extension_zones = st.sidebar.multiselect(
-        "Mostra zone estensione",
-        ["Below SMA50", "Non extended", "Extended", "Very extended", "Hyper extended"],
-        default=["Below SMA50", "Non extended", "Extended", "Very extended", "Hyper extended"],
-    )
-    min_breakout_pct = st.sidebar.slider("Stockbee breakout minimo %", 1.0, 15.0, 4.0, 0.5)
-    stockbee_min_price = st.sidebar.number_input("Stockbee prezzo minimo", min_value=0.0, value=3.0, step=0.5)
-    stockbee_min_volume = st.sidebar.number_input("Stockbee volume minimo", min_value=0, value=100_000, step=50_000)
-    breakout_lookback = st.sidebar.slider("Lookback high contesto", 10, 100, DEFAULT_BREAKOUT_LOOKBACK, 5)
-    # FIX #2 & #3: Qullamaggie mandatory filters from video timestamp 01:28:00
-    # Dollar Volume > $150M (or $15M small account), ADR 20D > 3.5% (or >5% small account)
-    min_dollar_volume = st.sidebar.number_input(
-        "Dollar Volume min ($M)", min_value=0, value=150, step=10,
-        help="Qullamaggie usa $150M. Small account: $15M."
-    ) * 1_000_000
-    min_adr_pct = st.sidebar.slider(
-        "ADR minimo %", 1.0, 10.0, 3.5, 0.5,
-        help="Qullamaggie usa 3.5%. Small account: 5%."
-    )
-    chunk_size = st.sidebar.slider("Ticker per batch", 25, 250, 100, 25)
-    pause_seconds = st.sidebar.slider("Pausa tra batch", 0.0, 2.0, 0.2, 0.1)
+    with st.sidebar.expander("Filtri principali", expanded=True):
+        min_price = st.number_input("Prezzo minimo", min_value=0.0, value=5.0, step=0.5)
+        min_avg_volume = st.number_input("Avg volume minimo", min_value=0, value=200_000, step=50_000)
+        top_percent = st.slider("Top momentum %", min_value=0.5, max_value=10.0, value=float(preset_defaults["top_percent"]), step=0.5)
+        only_non_extended = st.toggle("Steve mode: solo non-extended", value=bool(preset_defaults["only_non_extended"]))
+        min_dollar_volume = st.number_input(
+            "Dollar Volume min ($M)", min_value=0, value=int(preset_defaults["min_dollar_volume_m"]), step=10,
+            help="Qullamaggie usa $150M. Small account: $15M."
+        ) * 1_000_000
+        min_adr_pct = st.slider(
+            "ADR minimo %", 1.0, 10.0, float(preset_defaults["min_adr"]), 0.5,
+            help="Qullamaggie usa 3.5%. Small account: 5%."
+        )
+
+    with st.sidebar.expander("Estensione / rischio", expanded=False):
+        min_extension_atr = st.slider("Estensione minima ATR da SMA50", -5.0, 12.0, -5.0, 0.25)
+        moderate_extension_atr = st.slider("Extended da ATR", 1.0, 8.0, 3.0, 0.25)
+        max_extension_atr = moderate_extension_atr
+        high_extension_atr = st.slider("Very extended da ATR", 2.0, 12.0, 5.0, 0.25)
+        hyper_extension_atr = st.slider("Hyper extended da ATR", 4.0, 15.0, 7.0, 0.25)
+        selected_extension_zones = st.multiselect(
+            "Mostra zone estensione",
+            ["Below SMA50", "Non extended", "Extended", "Very extended", "Hyper extended"],
+            default=["Below SMA50", "Non extended", "Extended", "Very extended", "Hyper extended"],
+        )
+
+    with st.sidebar.expander("Stockbee / dati avanzati", expanded=False):
+        min_breakout_pct = st.slider("Stockbee breakout minimo %", 1.0, 15.0, 4.0, 0.5)
+        stockbee_min_price = st.number_input("Stockbee prezzo minimo", min_value=0.0, value=3.0, step=0.5)
+        stockbee_min_volume = st.number_input("Stockbee volume minimo", min_value=0, value=100_000, step=50_000)
+        breakout_lookback = st.slider("Lookback high contesto", 10, 100, DEFAULT_BREAKOUT_LOOKBACK, 5)
+        chunk_size = st.slider("Ticker per batch", 25, 250, 100, 25)
+        pause_seconds = st.slider("Pausa tra batch", 0.0, 2.0, 0.2, 0.1)
 
     filters = ScanFilters(
         min_price=min_price,
@@ -1717,7 +1929,6 @@ def sidebar_controls(symbols: pd.DataFrame) -> tuple[list[str], ScanFilters, lis
         stockbee_min_price=stockbee_min_price,
         stockbee_min_volume=int(stockbee_min_volume),
         breakout_lookback=breakout_lookback,
-        # FIX #2 & #3: new Qullamaggie mandatory filters
         min_dollar_volume=min_dollar_volume,
         min_adr_pct=min_adr_pct,
     )
@@ -1931,6 +2142,80 @@ def render_steve_algo_backtest(history: dict[str, pd.DataFrame], selected_symbol
         export_raw_section("SteveAlgo Backtest Trades", trades, "steve_algo_backtest_trades.csv")
 
 
+def render_daily_dashboard(
+    metrics: pd.DataFrame,
+    q_screen: pd.DataFrame,
+    steve_style_kq_screen: pd.DataFrame,
+    minervini_screen: pd.DataFrame,
+    guru_screen: pd.DataFrame,
+    stockbee_screen: pd.DataFrame,
+    sugar_babies: pd.DataFrame,
+    steve_algo_watchlist: pd.DataFrame,
+    data_status: dict[str, str | int | None],
+) -> pd.DataFrame:
+    st.markdown("## Daily Trading Dashboard")
+    st.caption("Action-first: riduce l'universo a 5-10 chart da rivedere. Scanner output = chart review, non trade. Capitale autorizzato: 0%.")
+    render_data_status_banner(data_status)
+
+    overlap_count = len(set(q_screen.get("Ticker", [])) & set(stockbee_screen.get("Ticker", []))) if not q_screen.empty and not stockbee_screen.empty else 0
+    steve_entry_count = 0
+    open_paper_outcomes = "N/D"
+    if not steve_algo_watchlist.empty and "SteveAlgo Primary Bucket" in steve_algo_watchlist.columns:
+        steve_entry_count = int((steve_algo_watchlist["SteveAlgo Primary Bucket"] == "Entry").sum())
+    if Path("exports/strategy_paper_outcomes.csv").exists():
+        try:
+            outcomes = pd.read_csv("exports/strategy_paper_outcomes.csv")
+            if "Outcome Status" in outcomes.columns:
+                open_paper_outcomes = str(int((outcomes["Outcome Status"].astype(str) == "OPEN").sum()))
+        except Exception:
+            open_paper_outcomes = "N/D"
+
+    kpis = st.columns(6)
+    kpis[0].metric("Last market date", data_status.get("last_market_date", "N/D"))
+    kpis[1].metric("SteveAlgo Entry", f"{steve_entry_count:,}")
+    kpis[2].metric("Stockbee 4%", f"{len(stockbee_screen):,}")
+    kpis[3].metric("Q strict", f"{len(q_screen):,}")
+    kpis[4].metric("Overlap Q x Stockbee", f"{overlap_count:,}")
+    kpis[5].metric("Open paper outcomes", open_paper_outcomes)
+
+    shortlist = build_daily_shortlist(
+        metrics=metrics,
+        q_screen=q_screen,
+        steve_style_kq_screen=steve_style_kq_screen,
+        minervini_screen=minervini_screen,
+        stockbee_screen=stockbee_screen,
+        sugar_babies=sugar_babies,
+        steve_algo_watchlist=steve_algo_watchlist,
+        limit=10,
+    )
+    st.subheader("Daily Shortlist — Top 10 Review Today")
+    if shortlist.empty:
+        st.info("Nessuna shortlist con i filtri correnti.")
+    else:
+        st.dataframe(
+            shortlist.round(2),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Daily Return %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Momentum Rank": st.column_config.NumberColumn(format="%.1f"),
+                "ADR 20D %": st.column_config.NumberColumn(format="%.1f%%"),
+                "ATR Extension SMA50": st.column_config.NumberColumn(format="%.2f"),
+                "Reward-Risk": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+        export_raw_section("Daily Shortlist", shortlist, "daily_shortlist.csv")
+    with st.expander("⚠️ Regole operative", expanded=False):
+        st.markdown(
+            "- `Review chart` = aprire chart, non entrare.\n"
+            "- `PAPER_CANDIDATE` richiede trigger, stop, target, R:R >= 3 e journal.\n"
+            "- `REJECT_RR` / `REJECT_EXTENDED` = niente watchlist operativa finché non cambia struttura.\n"
+            "- Capitale autorizzato sempre `0%` senza Portfolio Risk Gate + approvazione Antonio."
+        )
+    return shortlist
+
+
 def render_sugar_babies_view(sugar_babies: pd.DataFrame, metrics: pd.DataFrame) -> None:
     st.caption(
         "Sugar Babies SB replica la Stockbee Sugar Babies List: conta quante volte ogni ticker ha fatto "
@@ -1981,7 +2266,6 @@ def render_sugar_babies_view(sugar_babies: pd.DataFrame, metrics: pd.DataFrame) 
 def main() -> None:
     st.title("Qullamaggie NASDAQ Scanner")
     st.caption(f"Build: {APP_BUILD_MARKER}")
-    scanner_frameworks = scanner_framework_editor()
 
     controls = st.columns([1, 1, 2, 3])
     with controls[0]:
@@ -2018,6 +2302,8 @@ def main() -> None:
 
     metrics = pd.DataFrame()
     sugar_babies = pd.DataFrame()
+    data_metadata: dict[str, object] = {}
+    sb_metadata: dict[str, object] = {}
     enriched_history: dict[str, pd.DataFrame] = {}
     history: dict[str, pd.DataFrame] = {}
 
@@ -2031,13 +2317,9 @@ def main() -> None:
                 history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
         if METADATA_FILE.exists():
             try:
-                metadata = json.loads(METADATA_FILE.read_text())
-                st.caption(
-                    f"Dati precomputati aggiornati: {metadata.get('updated_at', 'n/d')} - "
-                    f"{metadata.get('tickers_with_data', len(metrics) or len(history)):,} ticker con dati."
-                )
+                data_metadata = json.loads(METADATA_FILE.read_text())
             except json.JSONDecodeError:
-                pass
+                data_metadata = {}
     else:
         if data_mode == "Precomputed" and not HISTORY_FILE.exists():
             st.warning("Nessun file precomputato trovato in data/history_prices.parquet. Uso yfinance live.")
@@ -2071,12 +2353,8 @@ def main() -> None:
     if SUGAR_BABIES_METADATA_FILE.exists():
         try:
             sb_metadata = json.loads(SUGAR_BABIES_METADATA_FILE.read_text())
-            st.caption(
-                f"Sugar Babies aggiornato: {sb_metadata.get('updated_at', 'n/d')} - "
-                f"{sb_metadata.get('sugar_babies_rows', len(sugar_babies)):,} ticker in watchlist."
-            )
         except json.JSONDecodeError:
-            pass
+            sb_metadata = {}
 
     base_history = enriched_history if enriched_history else history
     if not base_history and data_mode == "Precomputed" and HISTORY_FILE.exists():
@@ -2107,6 +2385,36 @@ def main() -> None:
     )
     extension_screen = apply_extension_zone_filter(add_extension_buckets(metrics, filters), selected_extension_zones)
     stockbee_screen = apply_stockbee_filter(metrics, filters)
+    steve_algo_watchlist = pd.DataFrame()
+    if has_steve_algo_metric_columns(metrics):
+        steve_algo_watchlist = apply_steve_algo_watchlists(metrics, steve_algo_thresholds_from_filters(filters, enforce_market_cap=False))
+
+    last_market_date = pd.to_datetime(metrics["Date"]).max().date() if "Date" in metrics.columns else None
+    data_status = compute_data_freshness_status(
+        updated_at=data_metadata.get("updated_at", "Live yfinance" if data_mode == "Live yfinance" else "N/D"),
+        last_market_date=last_market_date,
+    )
+
+    render_daily_dashboard(
+        metrics,
+        q_screen,
+        steve_style_kq_screen,
+        minervini_screen,
+        guru_screen,
+        stockbee_screen,
+        sugar_babies,
+        steve_algo_watchlist,
+        data_status,
+    )
+
+    st.caption(
+        f"Dati precomputati aggiornati: {_format_timestamp(data_metadata.get('updated_at'))} - "
+        f"{data_metadata.get('tickers_with_data', len(metrics) or len(history)):,} ticker con dati. "
+        f"Sugar Babies aggiornato: {_format_timestamp(sb_metadata.get('updated_at'))} - "
+        f"{sb_metadata.get('sugar_babies_rows', len(sugar_babies)):,} ticker in watchlist."
+    )
+
+    scanner_frameworks = scanner_framework_editor(expanded=False)
 
     kpis = st.columns(7)
     kpis[0].metric("Ticker con dati", f"{len(metrics):,}")
@@ -2121,7 +2429,7 @@ def main() -> None:
         "Framework",
         framework_options(scanner_frameworks),
         horizontal=True,
-        help="Separa gli scanner per framework. Puoi cambiare la composizione dalla sidebar: Framework scanner.",
+        help="Separa gli scanner per framework. La composizione è modificabile nell'expander: Configura framework scanner.",
     )
     view = st.radio(
         "Scanner",
@@ -2129,7 +2437,10 @@ def main() -> None:
         horizontal=True,
     )
 
-    if view == "Steve Dashboard":
+    if view == "Daily Dashboard":
+        st.info("Dashboard action-first mostrata sopra: usa gli scanner sotto solo per drill-down.")
+
+    elif view == "Steve Dashboard":
         render_steve_dashboard(metrics, q_screen, steve_style_kq_screen, minervini_screen, guru_screen, stockbee_screen, filters)
 
     elif view == "Steve Algo Watchlist":
@@ -2285,6 +2596,15 @@ def main() -> None:
 
     elif view == "Sugar Babies SB":
         render_sugar_babies_view(sugar_babies, metrics)
+
+    elif view == "Stockbee + Sugar Baby Overlap":
+        overlap = stockbee_screen[stockbee_screen["Ticker"].isin(_ticker_set(sugar_babies))].copy()
+        st.caption("Overlap Stockbee 4% corrente + Sugar Babies storico: ignition oggi dentro universo fast-horse. Chart review only; capitale autorizzato 0%.")
+        if overlap.empty:
+            st.info("Nessun overlap Stockbee + Sugar Baby con i filtri correnti.")
+        else:
+            st.dataframe(format_output(overlap), use_container_width=True, hide_index=True)
+            export_section("Stockbee Sugar Baby Overlap", overlap, "stockbee_sugar_baby_overlap.csv")
 
     elif view == "Universo":
         st.dataframe(format_output(metrics), use_container_width=True, hide_index=True)

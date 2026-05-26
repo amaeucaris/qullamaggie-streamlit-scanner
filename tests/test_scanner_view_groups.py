@@ -46,20 +46,25 @@ sys.modules["app"] = app
 spec.loader.exec_module(app)
 
 
-def test_scanner_groups_separate_qullamaggie_and_stockbee_progression():
-    assert app.framework_options() == ["Qullamaggie", "Stockbee"]
+def test_scanner_groups_separate_frameworks_by_operational_role():
+    assert app.framework_options() == ["Dashboard", "Qullamaggie", "SteveAlgo", "Stockbee", "Quality Filters"]
 
+    dashboard_views = app.view_options_for_scanner_group("Dashboard")
     qullamaggie_views = app.view_options_for_scanner_group("Qullamaggie")
+    steve_views = app.view_options_for_scanner_group("SteveAlgo")
     stockbee_views = app.view_options_for_scanner_group("Stockbee")
+    quality_views = app.view_options_for_scanner_group("Quality Filters")
 
-    assert "Qullamaggie Top 2%" in qullamaggie_views
-    assert "Steve-style KQ" in qullamaggie_views
-    assert "Strategy Learning Lab" in qullamaggie_views
-    assert "Backtest Q" in qullamaggie_views
+    assert dashboard_views == ["Daily Dashboard", "Strategy Learning Lab"]
+    assert qullamaggie_views == ["Qullamaggie Top 2%", "Backtest Q"]
+    assert "Steve-style KQ" in steve_views
+    assert "Steve Dashboard" in steve_views
     assert "Stockbee 4% Breakout" not in qullamaggie_views
     assert "Sugar Babies SB" not in qullamaggie_views
+    assert "Minervini" not in qullamaggie_views
 
-    assert stockbee_views == ["Stockbee 4% Breakout", "Sugar Babies SB"]
+    assert stockbee_views == ["Stockbee 4% Breakout", "Sugar Babies SB", "Stockbee + Sugar Baby Overlap"]
+    assert "Minervini" in quality_views
 
 
 def test_scanner_frameworks_can_be_overridden_from_app_state():
