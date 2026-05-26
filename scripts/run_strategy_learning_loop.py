@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +21,36 @@ DEFAULT_HISTORY = ROOT / "data" / "history_prices.parquet"
 DEFAULT_OUTPUT = ROOT / "exports"
 
 
+def _date_from_snapshot_name(path: Path) -> str:
+    match = re.search(r"(\d{4}-\d{2}-\d{2})", path.name)
+    return match.group(1) if match else "0000-00-00"
+
+
+def _snapshot_preference(path: Path) -> int:
+    return 1 if path.name.startswith("daily_shortlist_") else 0
+
+
 def latest_watchlist_path(watchlist_dir: str | Path = DEFAULT_WATCHLIST_DIR) -> Path | None:
     watchlist_dir = Path(watchlist_dir)
-    candidates = sorted(watchlist_dir.glob("steve_algo_watchlist_*.csv"))
-    return candidates[-1] if candidates else None
+    patterns = ["daily_shortlist_*.csv", "steve_algo_watchlist_*.csv"]
+    candidates: list[Path] = []
+    for pattern in patterns:
+        candidates.extend(watchlist_dir.glob(pattern))
+    return sorted(candidates, key=lambda p: (_date_from_snapshot_name(p), _snapshot_preference(p), p.name))[-1] if candidates else None
+
+
+def normalize_learning_signals(signals: pd.DataFrame, watchlist_path: Path) -> tuple[pd.DataFrame, str]:
+    out = signals.copy()
+    source = "DailyShortlist" if watchlist_path.name.startswith("daily_shortlist_") else "SteveAlgo"
+    if "Date" not in out.columns and "Signal Date" in out.columns:
+        out["Date"] = out["Signal Date"]
+    if "Date" not in out.columns:
+        out["Date"] = _date_from_snapshot_name(watchlist_path)
+    if "Strategy" not in out.columns:
+        out["Strategy"] = source
+    if source == "DailyShortlist" and "SteveAlgo Primary Bucket" not in out.columns and "SteveAlgo Bucket" in out.columns:
+        out["SteveAlgo Primary Bucket"] = out["SteveAlgo Bucket"]
+    return out, source
 
 
 def load_history_by_ticker(history_path: str | Path) -> dict[str, pd.DataFrame]:
@@ -61,6 +88,8 @@ def run_learning_loop(
         "slippage_bps": float(slippage_bps),
     }
     signals = pd.read_csv(watchlist_path)
+    signals, signal_source = normalize_learning_signals(signals, watchlist_path)
+    config["strategy"] = signal_source
     journal_path = output_dir / "strategy_signal_journal.csv"
     outcomes_path = output_dir / "strategy_paper_outcomes.csv"
     journal = append_signal_journal(signals, journal_path, config=config)
@@ -89,6 +118,7 @@ def run_learning_loop(
     paths = write_self_review(review, output_dir)
     return {
         "watchlist_path": str(watchlist_path),
+        "signal_source": signal_source,
         "journal_rows": int(len(journal)),
         "outcome_rows": int(len(outcomes)),
         "closed_outcomes": int((outcomes.get("Paper Status", pd.Series(dtype=str)) == "CLOSED").sum()) if not outcomes.empty else 0,

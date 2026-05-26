@@ -43,14 +43,18 @@ def run_daily_export(vault: Path, export_dir: Path = EXPORT_DIR, git_pull: bool 
     outputs = scanner_outputs(metrics, sugar)
     shortlist = build_daily_shortlist(outputs, limit=10)
     paths = write_daily_watchlist_note(shortlist, outputs, freshness, vault=vault, export_dir=export_dir, as_of=freshness.last_market_date)
+    steve_algo_csv = export_dir / f"steve_algo_watchlist_{freshness.last_market_date}.csv"
+    outputs.get("steve_algo", pd.DataFrame()).to_csv(steve_algo_csv, index=False)
     return {
         "status": freshness.status,
         "last_market_date": freshness.last_market_date,
         "last_update": freshness.last_update,
         "shortlist_rows": int(len(shortlist)),
+        "steve_algo_rows": int(len(outputs.get("steve_algo", pd.DataFrame()))),
         "markdown": str(paths["markdown"]),
         "latest": str(paths["latest"]),
         "csv": str(paths["csv"]),
+        "steve_algo_csv": str(steve_algo_csv),
         "scanner_counts": str(paths["scanner_counts"]),
     }
 
