@@ -8,6 +8,7 @@ from qull_scanner.strategy_exports import (
     DataFreshness,
     add_weekly_effectiveness,
     build_daily_shortlist,
+    classify_extension_risk,
     scanner_outputs,
     write_daily_watchlist_note,
     write_weekly_effectiveness_note,
@@ -80,6 +81,38 @@ def test_daily_shortlist_and_obsidian_note(tmp_path: Path):
     assert "Capital authorized: 0%" in content
     assert paths["csv"].exists()
     assert (tmp_path / "queries" / "latest-strategy-lab-watchlist.md").exists()
+
+
+def test_classify_extension_risk_zones():
+    assert classify_extension_risk(4.99) == ("NORMAL", "ATR/SMA50 <5x — no extension warning")
+    assert classify_extension_risk(5.0) == ("EXTENDED", "CAUTION_EXTENDED: ATR/SMA50 5.00x >=5x")
+    assert classify_extension_risk(7.0) == ("OVEREXTENDED", "REJECT_EXTENDED_REVIEW: ATR/SMA50 7.00x >=7x")
+    assert classify_extension_risk(11.0) == ("HYPEREXTENDED", "REJECT_HYPEREXTENDED_REVIEW: ATR/SMA50 11.00x >=11x")
+    assert classify_extension_risk(None) == ("N/D", "ATR/SMA50 extension N/D")
+
+
+def test_daily_shortlist_marks_overextended_candidates():
+    metrics = _metrics()
+    metrics.loc[metrics["Ticker"] == "AAA", "ATR Extension SMA50"] = 7.2
+    outputs = scanner_outputs(metrics, pd.DataFrame([{"Ticker": "AAA", "Date": pd.Timestamp("2026-05-22"), "SB Score": 10}]))
+    shortlist = build_daily_shortlist(outputs, limit=3)
+    aaa = shortlist[shortlist["Ticker"] == "AAA"].iloc[0]
+    assert aaa["Extension Risk Zone"] == "OVEREXTENDED"
+    assert "REJECT_EXTENDED_REVIEW" in aaa["Extension Risk Reason"]
+    assert aaa["Trade Readiness"] == "REJECT_EXTENDED_REVIEW"
+    assert "REJECT_EXTENDED_REVIEW" in aaa["Reason"]
+
+
+def test_daily_watchlist_note_includes_extension_risk_reason(tmp_path: Path):
+    metrics = _metrics()
+    metrics.loc[metrics["Ticker"] == "AAA", "ATR Extension SMA50"] = 11.5
+    outputs = scanner_outputs(metrics, pd.DataFrame([{"Ticker": "AAA", "Date": pd.Timestamp("2026-05-22"), "SB Score": 10}]))
+    shortlist = build_daily_shortlist(outputs, limit=1)
+    freshness = DataFreshness("FRESH", "2026-05-22", "2026-05-23 01:00 UTC", 1, "ok")
+    paths = write_daily_watchlist_note(shortlist, outputs, freshness, tmp_path, tmp_path / "exports", as_of="2026-05-22")
+    content = paths["markdown"].read_text()
+    assert "extension HYPEREXTENDED" in content
+    assert "REJECT_HYPEREXTENDED_REVIEW" in content
 
 
 def test_weekly_effectiveness_review(tmp_path: Path):

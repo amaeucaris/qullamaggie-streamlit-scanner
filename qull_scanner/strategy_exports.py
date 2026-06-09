@@ -141,6 +141,20 @@ def _ticker_set(df: pd.DataFrame) -> set[str]:
     return set(df["Ticker"].astype(str).str.upper())
 
 
+def classify_extension_risk(value: Any) -> tuple[str, str]:
+    """Classify ATR-to-SMA50 extension as a risk overlay, not a trade signal."""
+    extension = _safe_float(value)
+    if not math.isfinite(extension):
+        return "N/D", "ATR/SMA50 extension N/D"
+    if extension >= 11:
+        return "HYPEREXTENDED", f"REJECT_HYPEREXTENDED_REVIEW: ATR/SMA50 {extension:.2f}x >=11x"
+    if extension >= 7:
+        return "OVEREXTENDED", f"REJECT_EXTENDED_REVIEW: ATR/SMA50 {extension:.2f}x >=7x"
+    if extension >= 5:
+        return "EXTENDED", f"CAUTION_EXTENDED: ATR/SMA50 {extension:.2f}x >=5x"
+    return "NORMAL", "ATR/SMA50 <5x — no extension warning"
+
+
 def build_daily_shortlist(outputs: dict[str, pd.DataFrame], limit: int = 10) -> pd.DataFrame:
     latest = outputs.get("latest", pd.DataFrame())
     if latest.empty or "Ticker" not in latest.columns:
@@ -191,6 +205,19 @@ def build_daily_shortlist(outputs: dict[str, pd.DataFrame], limit: int = 10) -> 
             readiness = "PRIORITY REVIEW"
         elif score <= 2:
             readiness = "MONITOR"
+        extension_value = row.get("ATR Extension SMA50")
+        extension_zone, extension_reason = classify_extension_risk(extension_value)
+        base_reason = steve_row.get("SteveAlgo Reason") or row.get("Steve-style KQ Reason") or "multi-framework candidate"
+        if extension_zone == "HYPEREXTENDED":
+            readiness = "REJECT_HYPEREXTENDED_REVIEW"
+            reason = f"{extension_reason}; {base_reason}"
+        elif extension_zone == "OVEREXTENDED":
+            readiness = "REJECT_EXTENDED_REVIEW"
+            reason = f"{extension_reason}; {base_reason}"
+        elif extension_zone == "EXTENDED":
+            reason = f"{extension_reason}; {base_reason}"
+        else:
+            reason = base_reason
         rows.append(
             {
                 "Ticker": ticker,
@@ -200,10 +227,12 @@ def build_daily_shortlist(outputs: dict[str, pd.DataFrame], limit: int = 10) -> 
                 "Price": row.get("Price"),
                 "Daily Return %": row.get("Daily Return %"),
                 "Momentum Rank": row.get("Momentum Rank"),
-                "ATR Extension SMA50": row.get("ATR Extension SMA50"),
+                "ATR Extension SMA50": extension_value,
+                "Extension Risk Zone": extension_zone,
+                "Extension Risk Reason": extension_reason,
                 "Reward-Risk": rr if math.isfinite(rr) else None,
                 "SteveAlgo Bucket": bucket or "N/D",
-                "Reason": steve_row.get("SteveAlgo Reason") or row.get("Steve-style KQ Reason") or "multi-framework candidate",
+                "Reason": reason,
                 "Capital Authorized": "0%",
                 "Signal Date": str(pd.Timestamp(row.get("Date")).date()) if row.get("Date") is not None else "N/D",
                 "Breakout Level": row.get("Breakout Level"),
@@ -274,7 +303,8 @@ def write_daily_watchlist_note(
             lines.append(
                 f"- **{row['Ticker']}** — {row['Trade Readiness']} | score {row['Score']} | "
                 f"price {_fmt(row.get('Price'))} | daily {_fmt(row.get('Daily Return %'))}% | "
-                f"momentum {_fmt(row.get('Momentum Rank'))} | frameworks: {row.get('Frameworks', 'N/D')} | "
+                f"momentum {_fmt(row.get('Momentum Rank'))} | extension {row.get('Extension Risk Zone', 'N/D')} "
+                f"({_fmt(row.get('ATR Extension SMA50'))}x) | frameworks: {row.get('Frameworks', 'N/D')} | "
                 f"R/R {_fmt(row.get('Reward-Risk'))} | {row.get('Reason', '')}"
             )
     lines += [
