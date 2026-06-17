@@ -47,15 +47,17 @@ spec.loader.exec_module(app)
 
 
 def test_scanner_groups_separate_frameworks_by_operational_role():
-    assert app.framework_options() == ["Dashboard", "Qullamaggie", "SteveAlgo", "Stockbee", "Quality Filters"]
+    assert app.framework_options() == ["Dashboard", "Strategy Lab", "Qullamaggie", "SteveAlgo", "Stockbee", "Quality Filters"]
 
     dashboard_views = app.view_options_for_scanner_group("Dashboard")
+    strategy_lab_views = app.view_options_for_scanner_group("Strategy Lab")
     qullamaggie_views = app.view_options_for_scanner_group("Qullamaggie")
     steve_views = app.view_options_for_scanner_group("SteveAlgo")
     stockbee_views = app.view_options_for_scanner_group("Stockbee")
     quality_views = app.view_options_for_scanner_group("Quality Filters")
 
     assert dashboard_views == ["Daily Dashboard", "Strategy Learning Lab"]
+    assert strategy_lab_views == ["Theme Hits Board"]
     assert qullamaggie_views == ["Qullamaggie Top 2%", "Backtest Q"]
     assert "Steve-style KQ" in steve_views
     assert "Steve Dashboard" in steve_views
@@ -65,6 +67,51 @@ def test_scanner_groups_separate_frameworks_by_operational_role():
 
     assert stockbee_views == ["Stockbee 4% Breakout", "Sugar Babies SB", "Stockbee + Sugar Baby Overlap"]
     assert "Minervini" in quality_views
+
+
+def test_theme_hits_report_splits_themes_setup_timing_and_pivot_distance():
+    metrics = pd.DataFrame(
+        {
+            "Ticker": ["MRNA", "AMN", "EVC", "SSRM", "WEAK"],
+            "Date": pd.to_datetime(["2026-06-16"] * 5),
+            "Price": [55.40, 31.88, 9.15, 31.80, 10.0],
+            "Daily Return %": [6.3, 3.2, -0.3, 10.0, -5.0],
+            "Volume Ratio 20D": [2.2, 1.0, 0.8, 1.6, 2.0],
+            "Daily $ Volume 20D": [50_000_000, 20_000_000, 15_000_000, 30_000_000, 20_000_000],
+            "ATR Extension SMA50": [1.8, 4.4, 3.0, 0.7, -1.0],
+            "DCR %": [95, 80, 65, 92, 12],
+            "ADR 20D %": [5, 4, 3, 6, 4],
+            "Breakout Level": [52.13, 31.69, 9.93, 31.22, 11.0],
+            "Breakout Above Lookback High": [True, True, False, True, False],
+            "Minervini Trend Template": [True, True, True, True, False],
+            "Price > SMA10": [True, True, True, True, False],
+            "Price > SMA20": [True, True, True, True, False],
+            "Price > SMA50": [True, True, True, True, False],
+            "Universe Percentile": [95, 90, 80, 70, 10],
+            "Return 1M %": [20, 10, 8, 12, -10],
+            "Return 3M %": [25, 12, 6, 15, -20],
+            "Return 6M %": [30, 20, 10, 18, -30],
+        }
+    )
+    metadata = pd.DataFrame(
+        {
+            "Ticker": ["MRNA", "AMN", "EVC", "SSRM", "WEAK"],
+            "Sector": ["Healthcare", "Healthcare", "Communication Services", "Basic Materials", "Technology"],
+            "Industry": ["Biotechnology", "Medical Care Facilities", "Advertising Agencies", "Gold", "Semiconductors"],
+        }
+    )
+
+    report = app.build_theme_hits_report(metrics, metadata)
+
+    assert report["as_of"] == "2026-06-16"
+    assert report["kpis"]["confirmed_breakouts"] == 1
+    assert report["kpis"]["early_breakouts"] == 1
+    assert report["kpis"]["base_watch"] == 1
+    assert report["kpis"]["chase_risk"] == 1
+    assert report["setup_lists"]["confirmed_breakouts"].iloc[0]["Ticker"] == "MRNA"
+    assert report["setup_lists"]["confirmed_breakouts"].iloc[0]["Pivot Position"] == "EXTENDED_FROM_PIVOT"
+    assert report["setup_lists"]["early_breakouts"].iloc[0]["Ticker"] == "AMN"
+    assert report["green_themes"].iloc[0]["theme"] == "Biotech Momentum"
 
 
 def test_scanner_frameworks_can_be_overridden_from_app_state():

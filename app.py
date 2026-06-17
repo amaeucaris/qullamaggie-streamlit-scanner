@@ -78,8 +78,9 @@ METRICS_FILE = DATA_DIR / "scanner_metrics.parquet"
 SUGAR_BABIES_FILE = DATA_DIR / "sugar_babies.parquet"
 SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
+SECTOR_METADATA_FILE = DATA_DIR / "sector_metadata.csv"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-05-26-action-first-dashboard-data-freshness"
+APP_BUILD_MARKER = "2026-06-17-strategy-lab-theme-hits-board"
 STEVE_ALGO_METRIC_COLUMNS = {
     "EMA10",
     "EMA20",
@@ -102,12 +103,14 @@ RETURN_WINDOWS = {
     "9M": 189,
 }
 DASHBOARD_VIEWS = ["Daily Dashboard", "Strategy Learning Lab"]
+STRATEGY_LAB_VIEWS = ["Theme Hits Board"]
 QULLAMAGGIE_VIEWS = ["Qullamaggie Top 2%", "Backtest Q"]
 STEVE_ALGO_VIEWS = ["Steve Dashboard", "Steve Algo Watchlist", "Steve Algo Backtest", "Steve-style KQ"]
 STOCKBEE_VIEWS = ["Stockbee 4% Breakout", "Sugar Babies SB", "Stockbee + Sugar Baby Overlap"]
 QUALITY_FILTER_VIEWS = ["Guru Q x Minervini", "Minervini", "Extension Map", "Universo", "Chart"]
 DEFAULT_SCANNER_FRAMEWORKS = {
     "Dashboard": DASHBOARD_VIEWS,
+    "Strategy Lab": STRATEGY_LAB_VIEWS,
     "Qullamaggie": QULLAMAGGIE_VIEWS,
     "SteveAlgo": STEVE_ALGO_VIEWS,
     "Stockbee": STOCKBEE_VIEWS,
@@ -115,8 +118,58 @@ DEFAULT_SCANNER_FRAMEWORKS = {
 }
 SCANNER_GROUPS = list(DEFAULT_SCANNER_FRAMEWORKS)
 ALL_SCANNER_VIEWS = list(
-    dict.fromkeys(DASHBOARD_VIEWS + QULLAMAGGIE_VIEWS + STEVE_ALGO_VIEWS + STOCKBEE_VIEWS + QUALITY_FILTER_VIEWS)
+    dict.fromkeys(
+        DASHBOARD_VIEWS + STRATEGY_LAB_VIEWS + QULLAMAGGIE_VIEWS + STEVE_ALGO_VIEWS + STOCKBEE_VIEWS + QUALITY_FILTER_VIEWS
+    )
 )
+
+THEME_INDUSTRY_OVERRIDES = {
+    "biotechnology": "Biotech Momentum",
+    "semiconductors": "Semiconductors",
+    "semiconductor equipment & materials": "Semi Equipment & Materials",
+    "electronic components": "Photonics / Optical / Comms Gear",
+    "communication equipment": "Photonics / Optical / Comms Gear",
+    "software - infrastructure": "Software Infrastructure / Cyber",
+    "software - application": "Software Infrastructure / Cyber",
+    "capital markets": "Financials / Capital Markets",
+    "banks - diversified": "Financials / Capital Markets",
+    "credit services": "Credit Services",
+    "gold": "Gold",
+    "aerospace & defense": "Aerospace / Space / Defense",
+    "solar": "Power / Nuclear / Grid",
+    "utilities - regulated electric": "Power / Nuclear / Grid",
+    "reit - hotel & motel": "REIT - Hotel & Motel",
+}
+THEME_TICKER_OVERRIDES = {
+    "MRNA": "Biotech Momentum",
+    "TGTX": "Biotech Momentum",
+    "CYTK": "Biotech Momentum",
+    "DFTX": "Biotech Momentum",
+    "AMD": "Semiconductors",
+    "NVDA": "Semiconductors",
+    "AVGO": "Semiconductors",
+    "MU": "Semiconductors",
+    "MRVL": "Semiconductors",
+    "ASML": "Semi Equipment & Materials",
+    "AMAT": "Semi Equipment & Materials",
+    "LRCX": "Semi Equipment & Materials",
+    "KLAC": "Semi Equipment & Materials",
+    "LITE": "Photonics / Optical / Comms Gear",
+    "COHR": "Photonics / Optical / Comms Gear",
+    "AAOI": "Photonics / Optical / Comms Gear",
+    "ROG": "Photonics / Optical / Comms Gear",
+    "PLTR": "Software Infrastructure / Cyber",
+    "CRWD": "Software Infrastructure / Cyber",
+    "PANW": "Software Infrastructure / Cyber",
+    "DDOG": "Software Infrastructure / Cyber",
+    "COIN": "Crypto Proxies / Miners",
+    "MSTR": "Crypto Proxies / Miners",
+    "IREN": "Crypto Proxies / Miners",
+    "MARA": "Crypto Proxies / Miners",
+    "LUNR": "Aerospace / Space / Defense",
+    "RKLB": "Aerospace / Space / Defense",
+    "ASTS": "Aerospace / Space / Defense",
+}
 
 
 def normalize_scanner_frameworks(frameworks: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -138,6 +191,229 @@ def framework_options(frameworks: dict[str, list[str]] | None = None) -> list[st
 
 def has_steve_algo_metric_columns(metrics: pd.DataFrame) -> bool:
     return STEVE_ALGO_METRIC_COLUMNS.issubset(set(metrics.columns))
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def load_sector_metadata(path: Path = SECTOR_METADATA_FILE) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=["Ticker", "Sector", "Industry"])
+    try:
+        metadata = pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame(columns=["Ticker", "Sector", "Industry"])
+    if "Ticker" not in metadata.columns:
+        return pd.DataFrame(columns=["Ticker", "Sector", "Industry"])
+    metadata = metadata.copy()
+    metadata["Ticker"] = metadata["Ticker"].astype(str).str.upper()
+    return metadata.drop_duplicates("Ticker", keep="first")
+
+
+def practitioner_theme_for_row(row: pd.Series) -> str:
+    ticker = str(row.get("Ticker", "")).upper()
+    if ticker in THEME_TICKER_OVERRIDES:
+        return THEME_TICKER_OVERRIDES[ticker]
+    industry = str(row.get("Industry", "") or "").strip()
+    sector = str(row.get("Sector", "") or "").strip()
+    key = industry.lower()
+    if key in THEME_INDUSTRY_OVERRIDES:
+        return THEME_INDUSTRY_OVERRIDES[key]
+    return industry or sector or "Unknown / Unmapped"
+
+
+def pivot_position(distance_pct: float | None) -> str:
+    if distance_pct is None or not math.isfinite(distance_pct):
+        return "N/D"
+    if distance_pct < -3:
+        return "BELOW_PIVOT"
+    if distance_pct < 0:
+        return "JUST_BELOW_PIVOT"
+    if distance_pct <= 3:
+        return "AT_PIVOT"
+    if distance_pct <= 8:
+        return "EXTENDED_FROM_PIVOT"
+    return "CHASE_FROM_PIVOT"
+
+
+def classify_theme_setup(row: pd.Series) -> tuple[str, float, str, list[str]]:
+    price = _safe_float(row.get("Price"))
+    dollar_vol = _safe_float(row.get("Daily $ Volume 20D"))
+    daily = _safe_float(row.get("Daily Return %"))
+    rvol = _safe_float(row.get("Volume Ratio 20D"))
+    ext = _safe_float(row.get("ATR Extension SMA50"))
+    dcr = _safe_float(row.get("DCR %"))
+    adr = _safe_float(row.get("ADR 20D %"))
+    universe_pct = _safe_float(row.get("Universe Percentile"))
+    r1m = _safe_float(row.get("Return 1M %"))
+    r3m = _safe_float(row.get("Return 3M %"))
+    breakout = bool(row.get("Breakout Above Lookback High", False))
+    above_sma50 = bool(row.get("Price > SMA50", False))
+    if "Price > SMA50" not in row.index:
+        above_sma50 = price > _safe_float(row.get("SMA50"))
+    trend_ok = bool(row.get("Minervini Trend Template", False)) and bool(row.get("Price > SMA10", False)) and bool(row.get("Price > SMA20", False)) and above_sma50
+    liquid = price >= 5 and dollar_vol >= 10_000_000
+    not_extended = 0 <= ext <= 5
+    momentum = r1m > 0 or r3m > 0 or universe_pct >= 70
+    reasons: list[str] = []
+    status = "NO_SETUP"
+    score = 0.0
+
+    if liquid and trend_ok and breakout and daily >= 8:
+        status = "FOLLOW_THROUGH_CHASE_RISK"
+        score = 55 + min(universe_pct, 100) / 5 + min(rvol, 5) * 2 - max(ext - 5, 0) * 4
+        reasons.append("follow-through >=8%; do not chase blindly")
+    elif liquid and trend_ok and breakout and daily >= 4 and rvol >= 1.5:
+        status = "CONFIRMED_BREAKOUT"
+        score = 70 + min(universe_pct, 100) / 5 + min(rvol, 5) * 3 - max(ext - 5, 0) * 3
+        reasons.append("breakout + daily >=4% + RVOL >=1.5")
+    elif liquid and trend_ok and breakout and daily >= 2:
+        status = "EARLY_BREAKOUT"
+        score = 65 + min(universe_pct, 100) / 5 + min(rvol, 5) * 2 + max(dcr - 50, 0) / 10 - max(ext - 5, 0) * 3
+        reasons.append("early breakout near pivot")
+    elif liquid and trend_ok and not breakout and momentum and not_extended and adr >= 2 and dcr >= 45:
+        status = "BASE_WATCH"
+        score = 55 + min(universe_pct, 100) / 5 + min(max(r1m, 0), 30) / 3 + min(rvol, 2) * 2 - max(ext - 4, 0) * 2
+        reasons.append("trend/base candidate; wait for breakout trigger")
+
+    if status == "FOLLOW_THROUGH_CHASE_RISK" or ext > 7 or daily >= 8:
+        risk = "HIGH"
+    elif ext > 5 or daily >= 6:
+        risk = "MEDIUM"
+    else:
+        risk = "LOW"
+    return status, round(score, 2), risk, reasons
+
+
+def add_theme_hits_columns(metrics: pd.DataFrame, sector_metadata: pd.DataFrame | None = None) -> pd.DataFrame:
+    if metrics.empty:
+        return metrics.copy()
+    latest_date = pd.to_datetime(metrics["Date"]).max() if "Date" in metrics.columns else None
+    df = metrics[pd.to_datetime(metrics["Date"]).eq(latest_date)].copy() if latest_date is not None else metrics.copy()
+    df["Ticker"] = df["Ticker"].astype(str).str.upper()
+    metadata = sector_metadata if sector_metadata is not None else load_sector_metadata()
+    if metadata is not None and not metadata.empty:
+        meta_cols = [c for c in ["Ticker", "Sector", "Industry"] if c in metadata.columns]
+        df = df.merge(metadata[meta_cols].drop_duplicates("Ticker"), on="Ticker", how="left")
+    for col in ["Sector", "Industry"]:
+        if col not in df.columns:
+            df[col] = "Unknown / Unmapped"
+        df[col] = df[col].fillna("Unknown / Unmapped")
+
+    df["Theme"] = df.apply(practitioner_theme_for_row, axis=1)
+    df["green_hits"] = 0
+    green_rules = [
+        df.get("Daily Return %", 0).astype(float) >= 2,
+        df.get("Volume Ratio 20D", 0).astype(float) >= 1.2,
+        df.get("DCR %", 0).astype(float) >= 70,
+        df.get("Price > SMA10", False).astype(bool),
+        df.get("Price > SMA20", False).astype(bool),
+        df.get("Minervini Trend Template", False).astype(bool),
+        df.get("Breakout Above Lookback High", False).astype(bool),
+        df.get("Return 1M %", 0).astype(float) > 0,
+        df.get("Return 3M %", 0).astype(float) > 0,
+        df.get("Universe Percentile", 0).astype(float) >= 70,
+    ]
+    for rule in green_rules:
+        df["green_hits"] += rule.fillna(False).astype(int) * 5
+    df["red_hits"] = 0
+    red_rules = [
+        df.get("Daily Return %", 0).astype(float) <= -2,
+        df.get("DCR %", 100).astype(float) <= 30,
+        ~df.get("Price > SMA20", True).astype(bool),
+        ~df.get("Minervini Trend Template", True).astype(bool),
+        df.get("Return 1M %", 0).astype(float) < 0,
+    ]
+    for rule in red_rules:
+        df["red_hits"] += rule.fillna(False).astype(int) * 5
+
+    pivot = pd.to_numeric(df.get("Breakout Level"), errors="coerce")
+    price = pd.to_numeric(df.get("Price"), errors="coerce")
+    df["Pivot Estimate"] = pivot
+    df["Distance From Pivot %"] = ((price / pivot) - 1) * 100
+    df["Pivot Position"] = df["Distance From Pivot %"].apply(lambda value: pivot_position(float(value)) if pd.notna(value) else "N/D")
+    setup_values = df.apply(classify_theme_setup, axis=1)
+    df["Setup Status"] = [v[0] for v in setup_values]
+    df["Setup Score"] = [v[1] for v in setup_values]
+    df["Chase Risk"] = [v[2] for v in setup_values]
+    df["Setup Reasons"] = [v[3] for v in setup_values]
+    return df
+
+
+def summarize_theme_hits(df: pd.DataFrame, side: str = "green", limit: int = 25) -> pd.DataFrame:
+    hit_col = "green_hits" if side == "green" else "red_hits"
+    if df.empty or hit_col not in df.columns:
+        return pd.DataFrame(columns=["theme", "hits", "ticker_count", "top_tickers"])
+    source = df[df[hit_col] > 0]
+    known_source = source[~source["Theme"].eq("Unknown / Unmapped")]
+    if not known_source.empty:
+        source = known_source
+    rows = []
+    for theme, group in source.groupby("Theme", dropna=False):
+        leaders = group.sort_values(hit_col, ascending=False).head(10)
+        rows.append(
+            {
+                "theme": theme,
+                "hits": int(group[hit_col].sum()),
+                "ticker_count": int(group["Ticker"].nunique()),
+                "top_tickers": [
+                    {"ticker": r["Ticker"], "hits": int(r[hit_col]), "ret": _safe_float(r.get("Daily Return %")), "rvol": _safe_float(r.get("Volume Ratio 20D"))}
+                    for r in leaders.to_dict("records")
+                ],
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["hits", "ticker_count"], ascending=False).head(limit).reset_index(drop=True)
+
+
+def build_theme_hits_report(metrics: pd.DataFrame, sector_metadata: pd.DataFrame | None = None) -> dict[str, object]:
+    scored = add_theme_hits_columns(metrics, sector_metadata)
+    green_themes = summarize_theme_hits(scored, "green")
+    red_themes = summarize_theme_hits(scored, "red")
+    setup_lists = {
+        "base_watch": scored[scored["Setup Status"].eq("BASE_WATCH")].sort_values("Setup Score", ascending=False).head(25),
+        "early_breakouts": scored[scored["Setup Status"].eq("EARLY_BREAKOUT")].sort_values("Setup Score", ascending=False).head(25),
+        "confirmed_breakouts": scored[scored["Setup Status"].eq("CONFIRMED_BREAKOUT")].sort_values("Setup Score", ascending=False).head(25),
+        "chase_risk": scored[scored["Setup Status"].eq("FOLLOW_THROUGH_CHASE_RISK")].sort_values("Setup Score", ascending=False).head(25),
+    }
+    clean_green = scored[
+        (scored["green_hits"] > scored["red_hits"])
+        & scored["Minervini Trend Template"].fillna(False).astype(bool)
+        & scored["Price > SMA10"].fillna(False).astype(bool)
+        & scored["Price > SMA20"].fillna(False).astype(bool)
+        & (pd.to_numeric(scored["DCR %"], errors="coerce") >= 55)
+        & (pd.to_numeric(scored["ADR 20D %"], errors="coerce") >= 2)
+        & (pd.to_numeric(scored["Daily $ Volume 20D"], errors="coerce") >= 10_000_000)
+        & (pd.to_numeric(scored["ATR Extension SMA50"], errors="coerce") <= 7)
+    ].copy()
+    clean_green["Clean Score"] = clean_green["green_hits"] + clean_green["Setup Score"] / 2 - clean_green["red_hits"]
+    clean_green = clean_green.sort_values("Clean Score", ascending=False).head(25)
+    as_of = "N/D"
+    if not scored.empty and "Date" in scored.columns:
+        as_of = str(pd.to_datetime(scored["Date"]).max().date())
+    return {
+        "as_of": as_of,
+        "scored": scored,
+        "green_themes": green_themes,
+        "red_themes": red_themes,
+        "setup_lists": setup_lists,
+        "clean_green": clean_green,
+        "kpis": {
+            "green_themes": len(green_themes),
+            "red_themes": len(red_themes),
+            "green_hits": int(scored["green_hits"].sum()) if not scored.empty else 0,
+            "red_hits": int(scored["red_hits"].sum()) if not scored.empty else 0,
+            "base_watch": len(setup_lists["base_watch"]),
+            "early_breakouts": len(setup_lists["early_breakouts"]),
+            "confirmed_breakouts": len(setup_lists["confirmed_breakouts"]),
+            "chase_risk": len(setup_lists["chase_risk"]),
+            "clean_green": len(clean_green),
+        },
+    }
 
 
 def view_options_for_scanner_group(
@@ -2263,6 +2539,102 @@ def render_sugar_babies_view(sugar_babies: pd.DataFrame, metrics: pd.DataFrame) 
     export_raw_section("Sugar Babies", view_df, "sugar_babies_sb.csv")
 
 
+def render_theme_hits_board(metrics: pd.DataFrame) -> None:
+    """Professional Strategy Lab control board for theme heat + setup timing."""
+    report = build_theme_hits_report(metrics, load_sector_metadata())
+    kpis = report["kpis"]
+    setup_lists = report["setup_lists"]
+    clean_green = report["clean_green"]
+    green_themes = report["green_themes"]
+    red_themes = report["red_themes"]
+
+    st.subheader("Strategy Lab · Theme Hits Board")
+    st.caption(
+        "EOD Stockbee/Qullamaggie-style control board: tema → setup timing → pivot distance → chase risk. "
+        "Chart review only; capitale autorizzato 0%."
+    )
+    st.info(f"As of {report['as_of']} · Scanner output = watchlist per review, non segnale operativo.")
+
+    metric_cols = st.columns(8)
+    metric_cols[0].metric("Green themes", f"{kpis['green_themes']:,}")
+    metric_cols[1].metric("Red themes", f"{kpis['red_themes']:,}")
+    metric_cols[2].metric("Green hits", f"{kpis['green_hits']:,}")
+    metric_cols[3].metric("Red hits", f"{kpis['red_hits']:,}")
+    metric_cols[4].metric("Base", f"{kpis['base_watch']:,}")
+    metric_cols[5].metric("Early", f"{kpis['early_breakouts']:,}")
+    metric_cols[6].metric("Confirmed", f"{kpis['confirmed_breakouts']:,}")
+    metric_cols[7].metric("Chase", f"{kpis['chase_risk']:,}")
+
+    st.markdown("### Setup Timing Funnel")
+    funnel_cols = st.columns(4)
+    funnel_data = [
+        ("BASE WATCH", setup_lists["base_watch"], "Pre-breakout / base vicino al pivot"),
+        ("EARLY BREAKOUT", setup_lists["early_breakouts"], "Primo trigger, non ancora ovvio"),
+        ("CONFIRMED", setup_lists["confirmed_breakouts"], "Breakout già confermato"),
+        ("CHASE RISK", setup_lists["chase_risk"], "Follow-through già esteso"),
+    ]
+    for col, (label, df, help_text) in zip(funnel_cols, funnel_data):
+        top = ", ".join(df["Ticker"].head(5).tolist()) if not df.empty else "N/D"
+        col.metric(label, len(df), help=help_text)
+        col.caption(top)
+
+    action_board = pd.concat(
+        [setup_lists["base_watch"], setup_lists["early_breakouts"], setup_lists["confirmed_breakouts"]],
+        ignore_index=True,
+    ).sort_values("Setup Score", ascending=False)
+    action_cols = [
+        "Ticker",
+        "Theme",
+        "Setup Status",
+        "Setup Score",
+        "Chase Risk",
+        "Pivot Estimate",
+        "Distance From Pivot %",
+        "Pivot Position",
+        "green_hits",
+        "Daily Return %",
+        "Volume Ratio 20D",
+        "ATR Extension SMA50",
+        "DCR %",
+    ]
+
+    left, right = st.columns([1.25, 0.75])
+    with left:
+        st.markdown("### Action Board — aprire questi chart per primi")
+        st.dataframe(
+            action_board[action_cols].head(25),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Setup Score": st.column_config.NumberColumn(format="%.1f"),
+                "Pivot Estimate": st.column_config.NumberColumn(format="$%.2f"),
+                "Distance From Pivot %": st.column_config.NumberColumn(format="%+.1f%%"),
+                "Daily Return %": st.column_config.NumberColumn(format="%+.1f%%"),
+                "Volume Ratio 20D": st.column_config.NumberColumn(format="%.2f"),
+                "ATR Extension SMA50": st.column_config.NumberColumn(format="%.2f"),
+                "DCR %": st.column_config.NumberColumn(format="%.0f"),
+            },
+        )
+        export_raw_section("Theme Hits Action Board", action_board[action_cols].head(100), "theme_hits_action_board.csv")
+
+        st.markdown("### Clean GREEN shortlist")
+        clean_cols = ["Ticker", "Theme", "Clean Score", "Setup Status", "Chase Risk", "Pivot Estimate", "Distance From Pivot %", "Pivot Position", "green_hits", "Daily Return %", "Volume Ratio 20D", "ATR Extension SMA50", "DCR %"]
+        st.dataframe(clean_green[clean_cols].head(25), use_container_width=True, hide_index=True)
+        export_raw_section("Theme Hits Clean GREEN", clean_green[clean_cols].head(100), "theme_hits_clean_green.csv")
+
+    with right:
+        st.markdown("### Buy / Continuation Theme Heat")
+        st.dataframe(green_themes[["theme", "hits", "ticker_count"]].head(20), use_container_width=True, hide_index=True)
+        st.markdown("### Pressure / Weakness Theme Heat")
+        st.dataframe(red_themes[["theme", "hits", "ticker_count"]].head(20), use_container_width=True, hide_index=True)
+
+    with st.expander("Dettaglio ticker per tema", expanded=False):
+        selected_theme = st.selectbox("Tema", green_themes["theme"].tolist() if not green_themes.empty else ["N/D"])
+        scored = report["scored"]
+        theme_rows = scored[scored["Theme"].eq(selected_theme)].sort_values("green_hits", ascending=False)
+        st.dataframe(theme_rows[action_cols].head(50), use_container_width=True, hide_index=True)
+
+
 def main() -> None:
     st.title("Qullamaggie NASDAQ Scanner")
     st.caption(f"Build: {APP_BUILD_MARKER}")
@@ -2439,6 +2811,9 @@ def main() -> None:
 
     if view == "Daily Dashboard":
         st.info("Dashboard action-first mostrata sopra: usa gli scanner sotto solo per drill-down.")
+
+    elif view == "Theme Hits Board":
+        render_theme_hits_board(metrics)
 
     elif view == "Steve Dashboard":
         render_steve_dashboard(metrics, q_screen, steve_style_kq_screen, minervini_screen, guru_screen, stockbee_screen, filters)

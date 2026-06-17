@@ -116,8 +116,9 @@ def test_daily_shortlist_prioritizes_overlap_and_action_labels():
 
 
 def test_default_frameworks_are_action_first_and_not_mixed():
-    assert app.framework_options() == ["Dashboard", "Qullamaggie", "SteveAlgo", "Stockbee", "Quality Filters"]
+    assert app.framework_options() == ["Dashboard", "Strategy Lab", "Qullamaggie", "SteveAlgo", "Stockbee", "Quality Filters"]
     assert app.view_options_for_scanner_group("Dashboard") == ["Daily Dashboard", "Strategy Learning Lab"]
+    assert app.view_options_for_scanner_group("Strategy Lab") == ["Theme Hits Board"]
     assert app.view_options_for_scanner_group("Stockbee") == [
         "Stockbee 4% Breakout",
         "Sugar Babies SB",
