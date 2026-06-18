@@ -241,25 +241,65 @@ def pivot_position(distance_pct: float | None) -> str:
     return "CHASE_FROM_PIVOT"
 
 
-def classify_theme_setup(row: pd.Series) -> tuple[str, float, str, list[str]]:
+def stockbee_ants_metrics(row: pd.Series) -> tuple[float | None, float | None, bool, list[str]]:
+    """Stockbee-style Ants/tight-accumulation gate from the referenced scan.
+
+    Core formulas:
+    - abs(daily % change) <= 0.40
+    - abs(close - previous close) < 0.40 dollars
+    - today/yesterday/day-before closes inside a <= 1% range when 2D close is available
+    """
     price = _safe_float(row.get("Price"))
-    dollar_vol = _safe_float(row.get("Daily $ Volume 20D"))
+    prev_close = _safe_float(row.get("Prev Close"))
+    close_2d = _safe_float(row.get("Close 2D Ago"))
     daily = _safe_float(row.get("Daily Return %"))
-    rvol = _safe_float(row.get("Volume Ratio 20D"))
+    net_change = abs(price - prev_close) if price is not None and prev_close is not None else None
+    close_range_3d = None
+    if price is not None and prev_close is not None and close_2d is not None:
+        closes = [price, prev_close, close_2d]
+        low = min(closes)
+        if low > 0:
+            close_range_3d = (max(closes) / low - 1) * 100
+
+    reasons: list[str] = []
+    tight = True
+    if daily is None or abs(daily) > 0.40:
+        tight = False
+    else:
+        reasons.append("daily change within +/-0.40%")
+    if net_change is None or net_change >= 0.40:
+        tight = False
+    else:
+        reasons.append("net dollar change < $0.40")
+    if close_range_3d is None or close_range_3d > 1.00:
+        tight = False
+    else:
+        reasons.append("3-day closes inside 1% range")
+    return net_change, close_range_3d, tight, reasons
+
+
+def classify_theme_setup(row: pd.Series) -> tuple[str, float, str, list[str]]:
+    price = _safe_float(row.get("Price")) or 0
+    dollar_vol = _safe_float(row.get("Daily $ Volume 20D")) or 0
+    daily = _safe_float(row.get("Daily Return %")) or 0
+    rvol = _safe_float(row.get("Volume Ratio 20D")) or 0
     ext = _safe_float(row.get("ATR Extension SMA50"))
-    dcr = _safe_float(row.get("DCR %"))
-    adr = _safe_float(row.get("ADR 20D %"))
-    universe_pct = _safe_float(row.get("Universe Percentile"))
-    r1m = _safe_float(row.get("Return 1M %"))
-    r3m = _safe_float(row.get("Return 3M %"))
+    ext = ext if ext is not None else 999
+    dcr = _safe_float(row.get("DCR %")) or 0
+    adr = _safe_float(row.get("ADR 20D %")) or 0
+    universe_pct = _safe_float(row.get("Universe Percentile")) or 0
+    r1m = _safe_float(row.get("Return 1M %")) or 0
+    r3m = _safe_float(row.get("Return 3M %")) or 0
     breakout = bool(row.get("Breakout Above Lookback High", False))
     above_sma50 = bool(row.get("Price > SMA50", False))
     if "Price > SMA50" not in row.index:
-        above_sma50 = price > _safe_float(row.get("SMA50"))
+        sma50 = _safe_float(row.get("SMA50"))
+        above_sma50 = price > sma50 if sma50 is not None else False
     trend_ok = bool(row.get("Minervini Trend Template", False)) and bool(row.get("Price > SMA10", False)) and bool(row.get("Price > SMA20", False)) and above_sma50
     liquid = price >= 5 and dollar_vol >= 10_000_000
     not_extended = 0 <= ext <= 5
     momentum = r1m > 0 or r3m > 0 or universe_pct >= 70
+    stockbee_tight = bool(row.get("Stockbee Ants Tight", False))
     reasons: list[str] = []
     status = "NO_SETUP"
     score = 0.0
@@ -276,6 +316,10 @@ def classify_theme_setup(row: pd.Series) -> tuple[str, float, str, list[str]]:
         status = "EARLY_BREAKOUT"
         score = 65 + min(universe_pct, 100) / 5 + min(rvol, 5) * 2 + max(dcr - 50, 0) / 10 - max(ext - 5, 0) * 3
         reasons.append("early breakout near pivot")
+    elif liquid and trend_ok and not breakout and stockbee_tight and momentum and not_extended and adr >= 2 and dcr >= 55:
+        status = "STOCKBEE_ANTS"
+        score = 62 + min(universe_pct, 100) / 5 + min(rvol, 2) * 2 + max(dcr - 50, 0) / 10 - max(ext - 4, 0) * 2
+        reasons.extend(row.get("Stockbee Ants Reasons", []) or ["tight accumulation; wait for breakout trigger"])
     elif liquid and trend_ok and not breakout and momentum and not_extended and adr >= 2 and dcr >= 45:
         status = "BASE_WATCH"
         score = 55 + min(universe_pct, 100) / 5 + min(max(r1m, 0), 30) / 3 + min(rvol, 2) * 2 - max(ext - 4, 0) * 2
@@ -337,6 +381,11 @@ def add_theme_hits_columns(metrics: pd.DataFrame, sector_metadata: pd.DataFrame 
     df["Pivot Estimate"] = pivot
     df["Distance From Pivot %"] = ((price / pivot) - 1) * 100
     df["Pivot Position"] = df["Distance From Pivot %"].apply(lambda value: pivot_position(float(value)) if pd.notna(value) else "N/D")
+    ants_values = df.apply(stockbee_ants_metrics, axis=1)
+    df["Stockbee Net Change"] = [round(v[0], 2) if v[0] is not None else pd.NA for v in ants_values]
+    df["Stockbee 3D Close Range %"] = [round(v[1], 2) if v[1] is not None else pd.NA for v in ants_values]
+    df["Stockbee Ants Tight"] = [v[2] for v in ants_values]
+    df["Stockbee Ants Reasons"] = [v[3] for v in ants_values]
     setup_values = df.apply(classify_theme_setup, axis=1)
     df["Setup Status"] = [v[0] for v in setup_values]
     df["Setup Score"] = [v[1] for v in setup_values]
@@ -375,6 +424,7 @@ def build_theme_hits_report(metrics: pd.DataFrame, sector_metadata: pd.DataFrame
     green_themes = summarize_theme_hits(scored, "green")
     red_themes = summarize_theme_hits(scored, "red")
     setup_lists = {
+        "stockbee_ants": scored[scored["Setup Status"].eq("STOCKBEE_ANTS")].sort_values("Setup Score", ascending=False).head(25),
         "base_watch": scored[scored["Setup Status"].eq("BASE_WATCH")].sort_values("Setup Score", ascending=False).head(25),
         "early_breakouts": scored[scored["Setup Status"].eq("EARLY_BREAKOUT")].sort_values("Setup Score", ascending=False).head(25),
         "confirmed_breakouts": scored[scored["Setup Status"].eq("CONFIRMED_BREAKOUT")].sort_values("Setup Score", ascending=False).head(25),
@@ -407,6 +457,7 @@ def build_theme_hits_report(metrics: pd.DataFrame, sector_metadata: pd.DataFrame
             "red_themes": len(red_themes),
             "green_hits": int(scored["green_hits"].sum()) if not scored.empty else 0,
             "red_hits": int(scored["red_hits"].sum()) if not scored.empty else 0,
+            "stockbee_ants": len(setup_lists["stockbee_ants"]),
             "base_watch": len(setup_lists["base_watch"]),
             "early_breakouts": len(setup_lists["early_breakouts"]),
             "confirmed_breakouts": len(setup_lists["confirmed_breakouts"]),
@@ -968,6 +1019,7 @@ def calculate_metrics(
 
         last = df.iloc[-1]
         previous = df.iloc[-2]
+        close_2d_ago = df["Close"].iloc[-3] if len(df) >= 3 else np.nan
         sma200_1m_ago = df["SMA200"].iloc[-22] if len(df) >= 222 else np.nan
         minervini_trend_template = bool(
             pd.notna(last["SMA50"])
@@ -1038,6 +1090,7 @@ def calculate_metrics(
                 "Avg Volume > 200k": bool(last["AVG_VOL20"] > 200_000),
                 "Daily Return %": last["RET_1D_PCT"],
                 "Prev Close": previous["Close"],
+                "Close 2D Ago": close_2d_ago,
                 "Breakout Level": last["HIGH_LOOKBACK"],
                 "Breakout Above Lookback High": bool(last["Close"] > last["HIGH_LOOKBACK"]),
             }
@@ -2555,19 +2608,21 @@ def render_theme_hits_board(metrics: pd.DataFrame) -> None:
     )
     st.info(f"As of {report['as_of']} · Scanner output = watchlist per review, non segnale operativo.")
 
-    metric_cols = st.columns(8)
+    metric_cols = st.columns(9)
     metric_cols[0].metric("Green themes", f"{kpis['green_themes']:,}")
     metric_cols[1].metric("Red themes", f"{kpis['red_themes']:,}")
     metric_cols[2].metric("Green hits", f"{kpis['green_hits']:,}")
     metric_cols[3].metric("Red hits", f"{kpis['red_hits']:,}")
-    metric_cols[4].metric("Base", f"{kpis['base_watch']:,}")
-    metric_cols[5].metric("Early", f"{kpis['early_breakouts']:,}")
-    metric_cols[6].metric("Confirmed", f"{kpis['confirmed_breakouts']:,}")
-    metric_cols[7].metric("Chase", f"{kpis['chase_risk']:,}")
+    metric_cols[4].metric("Ants", f"{kpis['stockbee_ants']:,}")
+    metric_cols[5].metric("Base", f"{kpis['base_watch']:,}")
+    metric_cols[6].metric("Early", f"{kpis['early_breakouts']:,}")
+    metric_cols[7].metric("Confirmed", f"{kpis['confirmed_breakouts']:,}")
+    metric_cols[8].metric("Chase", f"{kpis['chase_risk']:,}")
 
     st.markdown("### Setup Timing Funnel")
-    funnel_cols = st.columns(4)
+    funnel_cols = st.columns(5)
     funnel_data = [
+        ("STOCKBEE ANTS", setup_lists["stockbee_ants"], "Tight accumulation: +/-0.40%, <$0.40 net change, 3-day closes <=1%"),
         ("BASE WATCH", setup_lists["base_watch"], "Pre-breakout / base vicino al pivot"),
         ("EARLY BREAKOUT", setup_lists["early_breakouts"], "Primo trigger, non ancora ovvio"),
         ("CONFIRMED", setup_lists["confirmed_breakouts"], "Breakout già confermato"),
@@ -2579,7 +2634,7 @@ def render_theme_hits_board(metrics: pd.DataFrame) -> None:
         col.caption(top)
 
     action_board = pd.concat(
-        [setup_lists["base_watch"], setup_lists["early_breakouts"], setup_lists["confirmed_breakouts"]],
+        [setup_lists["stockbee_ants"], setup_lists["base_watch"], setup_lists["early_breakouts"], setup_lists["confirmed_breakouts"]],
         ignore_index=True,
     ).sort_values("Setup Score", ascending=False)
     action_cols = [
@@ -2593,6 +2648,8 @@ def render_theme_hits_board(metrics: pd.DataFrame) -> None:
         "Pivot Position",
         "green_hits",
         "Daily Return %",
+        "Stockbee Net Change",
+        "Stockbee 3D Close Range %",
         "Volume Ratio 20D",
         "ATR Extension SMA50",
         "DCR %",
@@ -2610,6 +2667,8 @@ def render_theme_hits_board(metrics: pd.DataFrame) -> None:
                 "Pivot Estimate": st.column_config.NumberColumn(format="$%.2f"),
                 "Distance From Pivot %": st.column_config.NumberColumn(format="%+.1f%%"),
                 "Daily Return %": st.column_config.NumberColumn(format="%+.1f%%"),
+                "Stockbee Net Change": st.column_config.NumberColumn(format="$%.2f"),
+                "Stockbee 3D Close Range %": st.column_config.NumberColumn(format="%.2f%%"),
                 "Volume Ratio 20D": st.column_config.NumberColumn(format="%.2f"),
                 "ATR Extension SMA50": st.column_config.NumberColumn(format="%.2f"),
                 "DCR %": st.column_config.NumberColumn(format="%.0f"),
