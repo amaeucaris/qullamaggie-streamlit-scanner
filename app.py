@@ -103,7 +103,8 @@ RETURN_WINDOWS = {
     "9M": 189,
 }
 DASHBOARD_VIEWS = ["Daily Dashboard", "Strategy Learning Lab"]
-STRATEGY_LAB_VIEWS = ["Theme Hits Board", "Breadth Board"]
+STRATEGY_LAB_VIEWS = ["Theme Hits Board", "Breadth / Breath Board"]
+BREADTH_VIEWS = ["Breadth / Breath Board"]
 QULLAMAGGIE_VIEWS = ["Qullamaggie Top 2%", "Backtest Q"]
 STEVE_ALGO_VIEWS = ["Steve Dashboard", "Steve Algo Watchlist", "Steve Algo Backtest", "Steve-style KQ"]
 STOCKBEE_VIEWS = ["Stockbee 4% Breakout", "Sugar Babies SB", "Stockbee + Sugar Baby Overlap"]
@@ -111,6 +112,7 @@ QUALITY_FILTER_VIEWS = ["Guru Q x Minervini", "Minervini", "Extension Map", "Uni
 DEFAULT_SCANNER_FRAMEWORKS = {
     "Dashboard": DASHBOARD_VIEWS,
     "Strategy Lab": STRATEGY_LAB_VIEWS,
+    "Breadth": BREADTH_VIEWS,
     "Qullamaggie": QULLAMAGGIE_VIEWS,
     "SteveAlgo": STEVE_ALGO_VIEWS,
     "Stockbee": STOCKBEE_VIEWS,
@@ -119,7 +121,7 @@ DEFAULT_SCANNER_FRAMEWORKS = {
 SCANNER_GROUPS = list(DEFAULT_SCANNER_FRAMEWORKS)
 ALL_SCANNER_VIEWS = list(
     dict.fromkeys(
-        DASHBOARD_VIEWS + STRATEGY_LAB_VIEWS + QULLAMAGGIE_VIEWS + STEVE_ALGO_VIEWS + STOCKBEE_VIEWS + QUALITY_FILTER_VIEWS
+        DASHBOARD_VIEWS + STRATEGY_LAB_VIEWS + BREADTH_VIEWS + QULLAMAGGIE_VIEWS + STEVE_ALGO_VIEWS + STOCKBEE_VIEWS + QUALITY_FILTER_VIEWS
     )
 )
 
@@ -630,6 +632,65 @@ def breadth_group_drilldown(
         tickers = sorted(group["Ticker"].astype(str).unique().tolist())
         grouped.append({"Group / Tickers": group_name, "Count / Change %": len(tickers), "Tickers": ", ".join(tickers[:30])})
     return pd.DataFrame(grouped).sort_values(["Count / Change %", "Group / Tickers"], ascending=[False, True]).head(limit).reset_index(drop=True)
+
+
+def render_breadth_heatmap_html(table: pd.DataFrame, max_rows: int = 24) -> str:
+    """Render a visible Stockbee/Ariel-style dark breadth grid independent of st.dataframe styling."""
+    if table.empty:
+        return ""
+
+    def cell_style(column: str, value: object) -> str:
+        raw = str(value).replace("%", "")
+        try:
+            numeric = float(raw)
+        except ValueError:
+            numeric = 0.0
+        base = "padding:9px 10px;border:1px solid #1f2937;text-align:center;font-weight:700;"
+        if column == "Date":
+            return base + "background:#111827;color:#f9fafb;text-align:left;position:sticky;left:0;z-index:2;"
+        if column in {"5 Day Ratio", "10 Day Ratio"}:
+            return base + ("background:#ca8a04;color:#111827;" if numeric >= 1 else "background:#374151;color:#d1d5db;")
+        if column == ">50dma":
+            if numeric >= 60:
+                return base + "background:#2563eb;color:white;"
+            if numeric >= 45:
+                return base + "background:#1d4ed8;color:white;"
+            return base + "background:#7f1d1d;color:white;"
+        if column in BREADTH_POSITIVE_COLUMNS and numeric > 0:
+            return base + "background:#15803d;color:white;"
+        if column in BREADTH_NEGATIVE_COLUMNS and numeric > 0:
+            return base + "background:#991b1b;color:white;"
+        return base + "background:#020617;color:#94a3b8;"
+
+    rows = []
+    view = table.head(max_rows)
+    header = "".join(
+        f"<th style='padding:10px;border:1px solid #334155;background:#0f172a;color:#e5e7eb;position:sticky;top:0;z-index:3;'>{escape(str(col))}</th>"
+        for col in view.columns
+    )
+    for _, row in view.iterrows():
+        cells = "".join(
+            f"<td style='{cell_style(col, row[col])}'>{escape(str(row[col]))}</td>"
+            for col in view.columns
+        )
+        rows.append(f"<tr>{cells}</tr>")
+    return f"""
+    <div style='background:#020617;border:1px solid #1f2937;border-radius:18px;padding:16px;margin:8px 0 18px 0;'>
+      <div style='display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px;'>
+        <div>
+          <div style='font-size:22px;font-weight:800;color:#f9fafb;'>Breadth / Breath Board</div>
+          <div style='color:#94a3b8;font-size:13px;'>Ariel/Stockbee-style market participation grid · green = expansion, red = pressure, yellow = ratio, blue = >50dma.</div>
+        </div>
+        <div style='color:#f59e0b;font-weight:800;border:1px solid #92400e;border-radius:999px;padding:6px 12px;'>CHART REVIEW ONLY · 0% CAPITAL</div>
+      </div>
+      <div style='overflow:auto;max-height:760px;border-radius:12px;'>
+        <table style='border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap;'>
+          <thead><tr>{header}</tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </div>
+    """
 
 
 def style_breadth_table(table: pd.DataFrame):
@@ -2926,7 +2987,9 @@ def render_breadth_board(history: dict[str, pd.DataFrame], sector_metadata: pd.D
         """,
         unsafe_allow_html=True,
     )
-    st.dataframe(style_breadth_table(table), use_container_width=True, hide_index=True, height=720)
+    st.markdown(render_breadth_heatmap_html(table), unsafe_allow_html=True)
+    with st.expander("Tabella dati / export", expanded=False):
+        st.dataframe(style_breadth_table(table), use_container_width=True, hide_index=True, height=720)
     export_raw_section("Breadth Board", table, "breadth_board.csv")
 
     st.markdown("### Group drilldown")
@@ -3120,7 +3183,7 @@ def main() -> None:
     elif view == "Theme Hits Board":
         render_theme_hits_board(metrics)
 
-    elif view == "Breadth Board":
+    elif view in {"Breadth Board", "Breadth / Breath Board"}:
         if not history and HISTORY_FILE.exists():
             with st.spinner("Carico storico prezzi per Breadth Board..."):
                 all_history = load_precomputed_history(str(HISTORY_FILE))

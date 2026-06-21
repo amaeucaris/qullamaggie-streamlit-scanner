@@ -47,17 +47,19 @@ spec.loader.exec_module(app)
 
 
 def test_scanner_groups_separate_frameworks_by_operational_role():
-    assert app.framework_options() == ["Dashboard", "Strategy Lab", "Qullamaggie", "SteveAlgo", "Stockbee", "Quality Filters"]
+    assert app.framework_options() == ["Dashboard", "Strategy Lab", "Breadth", "Qullamaggie", "SteveAlgo", "Stockbee", "Quality Filters"]
 
     dashboard_views = app.view_options_for_scanner_group("Dashboard")
     strategy_lab_views = app.view_options_for_scanner_group("Strategy Lab")
+    breadth_views = app.view_options_for_scanner_group("Breadth")
     qullamaggie_views = app.view_options_for_scanner_group("Qullamaggie")
     steve_views = app.view_options_for_scanner_group("SteveAlgo")
     stockbee_views = app.view_options_for_scanner_group("Stockbee")
     quality_views = app.view_options_for_scanner_group("Quality Filters")
 
     assert dashboard_views == ["Daily Dashboard", "Strategy Learning Lab"]
-    assert strategy_lab_views == ["Theme Hits Board", "Breadth Board"]
+    assert strategy_lab_views == ["Theme Hits Board", "Breadth / Breath Board"]
+    assert breadth_views == ["Breadth / Breath Board"]
     assert qullamaggie_views == ["Qullamaggie Top 2%", "Backtest Q"]
     assert "Steve-style KQ" in steve_views
     assert "Steve Dashboard" in steve_views
