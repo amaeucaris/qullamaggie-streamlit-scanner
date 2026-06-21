@@ -80,7 +80,7 @@ SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
 SECTOR_METADATA_FILE = DATA_DIR / "sector_metadata.csv"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-06-21-strategy-lab-breadth-board"
+APP_BUILD_MARKER = "2026-06-21-breadth-visible-heatmap"
 STEVE_ALGO_METRIC_COLUMNS = {
     "EMA10",
     "EMA20",
