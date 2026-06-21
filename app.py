@@ -80,7 +80,7 @@ SUGAR_BABIES_METADATA_FILE = DATA_DIR / "sugar_babies_metadata.json"
 METADATA_FILE = DATA_DIR / "metadata.json"
 SECTOR_METADATA_FILE = DATA_DIR / "sector_metadata.csv"
 DEFAULT_BREAKOUT_LOOKBACK = 20
-APP_BUILD_MARKER = "2026-06-17-strategy-lab-theme-hits-board"
+APP_BUILD_MARKER = "2026-06-21-strategy-lab-breadth-board"
 STEVE_ALGO_METRIC_COLUMNS = {
     "EMA10",
     "EMA20",
@@ -103,7 +103,7 @@ RETURN_WINDOWS = {
     "9M": 189,
 }
 DASHBOARD_VIEWS = ["Daily Dashboard", "Strategy Learning Lab"]
-STRATEGY_LAB_VIEWS = ["Theme Hits Board"]
+STRATEGY_LAB_VIEWS = ["Theme Hits Board", "Breadth Board"]
 QULLAMAGGIE_VIEWS = ["Qullamaggie Top 2%", "Backtest Q"]
 STEVE_ALGO_VIEWS = ["Steve Dashboard", "Steve Algo Watchlist", "Steve Algo Backtest", "Steve-style KQ"]
 STOCKBEE_VIEWS = ["Stockbee 4% Breakout", "Sugar Babies SB", "Stockbee + Sugar Baby Overlap"]
@@ -465,6 +465,192 @@ def build_theme_hits_report(metrics: pd.DataFrame, sector_metadata: pd.DataFrame
             "clean_green": len(clean_green),
         },
     }
+
+
+BREADTH_INDICATORS = [
+    "Stocks Up 4%+ Today",
+    "Stocks Down 4%+ Today",
+    "Up 25%+ Quarter",
+    "Down 25%+ Quarter",
+    "Up 25%+ Month",
+    "Down 25%+ Month",
+    "Up 50%+ Month",
+    "Down 50%+ Month",
+    "Up 13%+ 34 Days",
+    "Down 13%+ 34 Days",
+    "10x ATR Ext.",
+    ">50dma",
+]
+BREADTH_POSITIVE_COLUMNS = {
+    "Stocks Up 4%+ Today",
+    "Up 25%+ Quarter",
+    "Up 25%+ Month",
+    "Up 50%+ Month",
+    "Up 13%+ 34 Days",
+    ">50dma",
+}
+BREADTH_NEGATIVE_COLUMNS = {
+    "Stocks Down 4%+ Today",
+    "Down 25%+ Quarter",
+    "Down 25%+ Month",
+    "Down 50%+ Month",
+    "Down 13%+ 34 Days",
+    "10x ATR Ext.",
+}
+
+
+def build_breadth_signal_frame(history: dict[str, pd.DataFrame], lookback_dates: int = 24) -> pd.DataFrame:
+    """Build Ariel/Stockbee-style breadth booleans per ticker/date from OHLCV history."""
+    rows: list[pd.DataFrame] = []
+    for ticker, frame in history.items():
+        required = {"High", "Low", "Close"}
+        if frame.empty or not required.issubset(frame.columns):
+            continue
+        df = frame[list(required)].copy().sort_index().dropna(subset=["Close"])
+        if len(df) < 65:
+            continue
+        close = pd.to_numeric(df["Close"], errors="coerce")
+        ret_1 = close.pct_change() * 100
+        ret_21 = close.pct_change(21) * 100
+        ret_34 = close.pct_change(34) * 100
+        ret_63 = close.pct_change(63) * 100
+        sma50 = close.rolling(50, min_periods=50).mean()
+        atr14 = atr(
+            pd.to_numeric(df["High"], errors="coerce"),
+            pd.to_numeric(df["Low"], errors="coerce"),
+            close,
+            length=14,
+        )
+        atr_ext = (close - sma50) / atr14.replace(0, np.nan)
+        signals = pd.DataFrame(
+            {
+                "Ticker": str(ticker).upper(),
+                "Stocks Up 4%+ Today": ret_1 >= 4,
+                "Stocks Down 4%+ Today": ret_1 <= -4,
+                "Up 25%+ Quarter": ret_63 >= 25,
+                "Down 25%+ Quarter": ret_63 <= -25,
+                "Up 25%+ Month": ret_21 >= 25,
+                "Down 25%+ Month": ret_21 <= -25,
+                "Up 50%+ Month": ret_21 >= 50,
+                "Down 50%+ Month": ret_21 <= -50,
+                "Up 13%+ 34 Days": ret_34 >= 13,
+                "Down 13%+ 34 Days": ret_34 <= -13,
+                "10x ATR Ext.": atr_ext >= 10,
+                ">50dma": close > sma50,
+            },
+            index=df.index,
+        )
+        rows.append(signals.tail(max(lookback_dates, 1)))
+    if not rows:
+        return pd.DataFrame(columns=["Date", "Ticker", *BREADTH_INDICATORS])
+    signals = pd.concat(rows).reset_index(names="Date")
+    signals["Date"] = pd.to_datetime(signals["Date"])
+    latest_dates = sorted(signals["Date"].dropna().unique())[-max(lookback_dates, 1) :]
+    signals = signals[signals["Date"].isin(latest_dates)].copy()
+    for column in BREADTH_INDICATORS:
+        signals[column] = signals[column].fillna(False).astype(bool)
+    return signals
+
+
+def build_breadth_report(
+    history: dict[str, pd.DataFrame],
+    sector_metadata: pd.DataFrame | None = None,
+    lookback_dates: int = 24,
+) -> dict[str, object]:
+    signals = build_breadth_signal_frame(history, lookback_dates=lookback_dates)
+    if signals.empty:
+        return {"as_of": "N/D", "table": pd.DataFrame(), "signals": signals, "metadata": sector_metadata}
+
+    rows = []
+    for date, group in signals.groupby("Date"):
+        row: dict[str, object] = {"Date": pd.to_datetime(date).strftime("%Y-%m-%d")}
+        for column in BREADTH_INDICATORS:
+            row[column] = int(group[column].sum())
+        row["Universe"] = int(group["Ticker"].nunique())
+        rows.append(row)
+    table = pd.DataFrame(rows).sort_values("Date", ascending=True).reset_index(drop=True)
+    up_roll_5 = table["Stocks Up 4%+ Today"].rolling(5, min_periods=1).sum()
+    down_roll_5 = table["Stocks Down 4%+ Today"].rolling(5, min_periods=1).sum().replace(0, np.nan)
+    up_roll_10 = table["Stocks Up 4%+ Today"].rolling(10, min_periods=1).sum()
+    down_roll_10 = table["Stocks Down 4%+ Today"].rolling(10, min_periods=1).sum().replace(0, np.nan)
+    table["5 Day Ratio"] = (up_roll_5 / down_roll_5).replace([np.inf, -np.inf], np.nan).round(2).fillna(0.0)
+    table["10 Day Ratio"] = (up_roll_10 / down_roll_10).replace([np.inf, -np.inf], np.nan).round(2).fillna(0.0)
+    pct_50dma = table[">50dma"] / table["Universe"].replace(0, np.nan) * 100
+    table[">50dma"] = pct_50dma.round(1).astype(str) + "%"
+    ordered_columns = [
+        "Date",
+        "Stocks Up 4%+ Today",
+        "Stocks Down 4%+ Today",
+        "5 Day Ratio",
+        "10 Day Ratio",
+        "Up 25%+ Quarter",
+        "Down 25%+ Quarter",
+        "Up 25%+ Month",
+        "Down 25%+ Month",
+        "Up 50%+ Month",
+        "Down 50%+ Month",
+        "Up 13%+ 34 Days",
+        "Down 13%+ 34 Days",
+        "10x ATR Ext.",
+        ">50dma",
+    ]
+    table = table[ordered_columns].sort_values("Date", ascending=False).reset_index(drop=True)
+    as_of = table.iloc[0]["Date"] if not table.empty else "N/D"
+    return {"as_of": as_of, "table": table, "signals": signals, "metadata": sector_metadata}
+
+
+def breadth_group_drilldown(
+    signals: pd.DataFrame,
+    sector_metadata: pd.DataFrame | None,
+    date: str,
+    indicator: str,
+    limit: int = 30,
+) -> pd.DataFrame:
+    if signals.empty or indicator not in signals.columns:
+        return pd.DataFrame(columns=["Group / Tickers", "Count / Change %", "Tickers"])
+    date_key = pd.to_datetime(date)
+    subset = signals[pd.to_datetime(signals["Date"]).eq(date_key) & signals[indicator].fillna(False).astype(bool)].copy()
+    if subset.empty:
+        return pd.DataFrame(columns=["Group / Tickers", "Count / Change %", "Tickers"])
+    if sector_metadata is not None and not sector_metadata.empty:
+        metadata = sector_metadata.copy()
+        metadata["Ticker"] = metadata["Ticker"].astype(str).str.upper()
+        meta_cols = [column for column in ["Ticker", "Industry", "Sector"] if column in metadata.columns]
+        subset = subset.merge(metadata[meta_cols].drop_duplicates("Ticker"), on="Ticker", how="left")
+    group_col = "Industry" if "Industry" in subset.columns else "Sector" if "Sector" in subset.columns else None
+    if group_col is None:
+        subset["Group / Tickers"] = "Unknown / Unmapped"
+        group_col = "Group / Tickers"
+    subset[group_col] = subset[group_col].fillna("Unknown / Unmapped")
+    known_subset = subset[~subset[group_col].eq("Unknown / Unmapped")]
+    if not known_subset.empty:
+        subset = known_subset
+    grouped = []
+    for group_name, group in subset.groupby(group_col):
+        tickers = sorted(group["Ticker"].astype(str).unique().tolist())
+        grouped.append({"Group / Tickers": group_name, "Count / Change %": len(tickers), "Tickers": ", ".join(tickers[:30])})
+    return pd.DataFrame(grouped).sort_values(["Count / Change %", "Group / Tickers"], ascending=[False, True]).head(limit).reset_index(drop=True)
+
+
+def style_breadth_table(table: pd.DataFrame):
+    def color_cell(value: object, column_name: str) -> str:
+        if column_name == "Date":
+            return "background-color: #111827; color: #e5e7eb; font-weight: 700;"
+        raw = str(value).replace("%", "")
+        try:
+            numeric = float(raw)
+        except ValueError:
+            numeric = 0.0
+        if column_name in BREADTH_POSITIVE_COLUMNS or column_name in {"5 Day Ratio", "10 Day Ratio"}:
+            threshold_passed = numeric >= 1 if column_name.endswith("Ratio") else numeric > 0
+            if threshold_passed:
+                return "background-color: #15803d; color: white; font-weight: 700;"
+        if column_name in BREADTH_NEGATIVE_COLUMNS:
+            if numeric > 0:
+                return "background-color: #991b1b; color: white; font-weight: 700;"
+        return "background-color: #020617; color: #d1d5db;"
+
+    return table.style.apply(lambda row: [color_cell(row[col], col) for col in table.columns], axis=1)
 
 
 def view_options_for_scanner_group(
@@ -2694,6 +2880,66 @@ def render_theme_hits_board(metrics: pd.DataFrame) -> None:
         st.dataframe(theme_rows[action_cols].head(50), use_container_width=True, hide_index=True)
 
 
+def render_breadth_board(history: dict[str, pd.DataFrame], sector_metadata: pd.DataFrame | None = None) -> None:
+    """Render Ariel Hernandez / Stockbee-style breadth participation board."""
+    report = build_breadth_report(history, sector_metadata, lookback_dates=24)
+    table = report["table"]
+    signals = report["signals"]
+    if not isinstance(table, pd.DataFrame) or not isinstance(signals, pd.DataFrame):
+        st.warning("Breadth report invalido.")
+        return
+
+    st.subheader("Strategy Lab · Breadth Board")
+    st.caption(
+        "Ariel/Stockbee-style participation monitor: 4% movers, month/quarter participation, 34-day breadth, "
+        "ATR-extension risk, and >50dma breadth. Context only; chart review, non segnale operativo. Capitale autorizzato 0%."
+    )
+    if table.empty:
+        st.warning("Breadth non disponibile: serve history_prices.parquet o storico OHLCV sufficiente.")
+        return
+
+    latest = table.iloc[0]
+    kpi_cols = st.columns(6)
+    kpi_cols[0].metric("Advancing 4%+", f"{int(latest['Stocks Up 4%+ Today']):,}")
+    kpi_cols[1].metric("Declining 4%+", f"{int(latest['Stocks Down 4%+ Today']):,}")
+    kpi_cols[2].metric("5D Up/Down", f"{float(latest['5 Day Ratio']):.2f}")
+    kpi_cols[3].metric("Up 25%+ Quarter", f"{int(latest['Up 25%+ Quarter']):,}")
+    kpi_cols[4].metric("Up 25%+ Month", f"{int(latest['Up 25%+ Month']):,}")
+    kpi_cols[5].metric(">50dma", str(latest[">50dma"]))
+
+    st.markdown(
+        """
+        <style>
+        .breadth-legend {display:flex; gap:14px; align-items:center; font-size:13px; margin:8px 0 12px 0;}
+        .breadth-pill {padding:4px 10px; border-radius:999px; font-weight:700;}
+        .breadth-green {background:#15803d; color:white;}
+        .breadth-red {background:#991b1b; color:white;}
+        .breadth-yellow {background:#eab308; color:#111827;}
+        .breadth-blue {background:#2563eb; color:white;}
+        </style>
+        <div class="breadth-legend">
+          <span class="breadth-pill breadth-green">Primary / advancing</span>
+          <span class="breadth-pill breadth-red">Declining / pressure</span>
+          <span class="breadth-pill breadth-yellow">Primary ratios</span>
+          <span class="breadth-pill breadth-blue">Participation >50dma</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.dataframe(style_breadth_table(table), use_container_width=True, hide_index=True, height=720)
+    export_raw_section("Breadth Board", table, "breadth_board.csv")
+
+    st.markdown("### Group drilldown")
+    drill_cols = st.columns([1, 1])
+    selected_date = drill_cols[0].selectbox("Date", table["Date"].tolist())
+    indicator_options = [column for column in BREADTH_INDICATORS if column != ">50dma"]
+    selected_indicator = drill_cols[1].selectbox("Indicator", indicator_options, index=2)
+    drilldown = breadth_group_drilldown(signals, sector_metadata, selected_date, selected_indicator)
+    st.dataframe(drilldown, use_container_width=True, hide_index=True)
+    export_raw_section("Breadth Group Drilldown", drilldown, "breadth_group_drilldown.csv")
+
+
+
 def main() -> None:
     st.title("Qullamaggie NASDAQ Scanner")
     st.caption(f"Build: {APP_BUILD_MARKER}")
@@ -2873,6 +3119,13 @@ def main() -> None:
 
     elif view == "Theme Hits Board":
         render_theme_hits_board(metrics)
+
+    elif view == "Breadth Board":
+        if not history and HISTORY_FILE.exists():
+            with st.spinner("Carico storico prezzi per Breadth Board..."):
+                all_history = load_precomputed_history(str(HISTORY_FILE))
+                history = {ticker: all_history[ticker] for ticker in selected_symbols if ticker in all_history}
+        render_breadth_board(history, load_sector_metadata())
 
     elif view == "Steve Dashboard":
         render_steve_dashboard(metrics, q_screen, steve_style_kq_screen, minervini_screen, guru_screen, stockbee_screen, filters)

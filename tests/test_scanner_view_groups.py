@@ -57,7 +57,7 @@ def test_scanner_groups_separate_frameworks_by_operational_role():
     quality_views = app.view_options_for_scanner_group("Quality Filters")
 
     assert dashboard_views == ["Daily Dashboard", "Strategy Learning Lab"]
-    assert strategy_lab_views == ["Theme Hits Board"]
+    assert strategy_lab_views == ["Theme Hits Board", "Breadth Board"]
     assert qullamaggie_views == ["Qullamaggie Top 2%", "Backtest Q"]
     assert "Steve-style KQ" in steve_views
     assert "Steve Dashboard" in steve_views
@@ -121,6 +121,62 @@ def test_theme_hits_report_splits_themes_setup_timing_and_pivot_distance():
     assert ants_row["Stockbee 3D Close Range %"] < 1.0
     assert "Biotech Momentum" in set(report["green_themes"]["theme"])
     assert "Semiconductors" in set(report["green_themes"]["theme"])
+
+
+def _history_frame(dates, closes):
+    close = pd.Series(closes, index=dates, dtype="float64")
+    return pd.DataFrame(
+        {
+            "Open": close,
+            "High": close + 1.0,
+            "Low": close - 1.0,
+            "Close": close,
+            "Volume": 10_000_000,
+        },
+        index=dates,
+    )
+
+
+def test_breadth_report_builds_ariel_style_indicators_and_group_drilldown():
+    dates = pd.bdate_range("2026-03-02", "2026-06-18")
+    base = [100.0] * len(dates)
+    strong = base.copy()
+    strong[-64:] = [100.0] * 30 + [112.0] * 13 + [120.0] * 20 + [130.0]
+    strong[-22] = 100.0
+    stronger = base.copy()
+    stronger[-64:] = [102.0] * 30 + [114.0] * 13 + [121.0] * 20 + [132.0]
+    stronger[-22] = 102.0
+    weak = base.copy()
+    weak[-64:] = [100.0] * 30 + [90.0] * 13 + [80.0] * 20 + [74.0]
+    weak[-22] = 100.0
+    history = {
+        "BIO1": _history_frame(dates, strong),
+        "SEMI1": _history_frame(dates, stronger),
+        "WEAK1": _history_frame(dates, weak),
+    }
+    metadata = pd.DataFrame(
+        {
+            "Ticker": ["BIO1", "SEMI1", "WEAK1"],
+            "Sector": ["Healthcare", "Technology", "Technology"],
+            "Industry": ["Biotechnology", "Semiconductors", "Software - Infrastructure"],
+        }
+    )
+
+    report = app.build_breadth_report(history, metadata, lookback_dates=5)
+    latest = report["table"].iloc[0]
+
+    assert report["as_of"] == "2026-06-18"
+    assert latest["Stocks Up 4%+ Today"] == 2
+    assert latest["Stocks Down 4%+ Today"] == 1
+    assert latest["Up 25%+ Quarter"] == 2
+    assert latest["Down 25%+ Quarter"] == 1
+    assert latest["Up 25%+ Month"] == 2
+    assert latest["Down 25%+ Month"] == 1
+    assert latest[">50dma"] == "66.7%"
+
+    groups = app.breadth_group_drilldown(report["signals"], metadata, "2026-06-18", "Up 25%+ Quarter")
+    assert list(groups["Group / Tickers"]) == ["Biotechnology", "Semiconductors"]
+    assert list(groups["Count / Change %"]) == [1, 1]
 
 
 def test_scanner_frameworks_can_be_overridden_from_app_state():
