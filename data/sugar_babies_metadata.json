@@ -1,14 +1,14 @@
 {
-  "updated_at": "2026-08-06T01:26:42.681256+00:00",
+  "updated_at": "2026-08-07T02:16:31.567309+00:00",
   "universe": "All US listed",
   "include_etfs": false,
   "period": "6y",
   "interval": "1d",
   "requested_tickers": 7492,
-  "tickers_with_data": 3587,
-  "missing_tickers": 3905,
+  "tickers_with_data": 6971,
+  "missing_tickers": 521,
   "sugar_babies_file": "data/sugar_babies.parquet",
-  "sugar_babies_rows": 87,
+  "sugar_babies_rows": 106,
   "sugar_babies_periods": [
     1450,
     1260,
