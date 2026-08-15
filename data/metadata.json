@@ -1,14 +1,14 @@
 {
-  "updated_at": "2026-08-14T00:22:35.610874+00:00",
+  "updated_at": "2026-08-15T00:04:05.680203+00:00",
   "universe": "All US listed",
   "include_etfs": false,
   "period": "18mo",
   "interval": "1d",
-  "requested_tickers": 7496,
-  "tickers_with_data": 6129,
-  "missing_tickers": 1367,
+  "requested_tickers": 7498,
+  "tickers_with_data": 4470,
+  "missing_tickers": 3028,
   "history_file": "data/history_prices.parquet",
   "metrics_file": "data/scanner_metrics.parquet",
   "metrics_breakout_lookback": 20,
-  "metrics_rows": 5419
+  "metrics_rows": 3963
 }
